@@ -447,8 +447,98 @@ ir_block* ir_function_create_block(ir_function *self, const char *label)
     return bn;
 }
 
+bool ir_function_pass_tailcall(ir_function *self)
+{
+    size_t b, p;
+
+    for (b = 0; b < self->blocks_count; ++b) {
+        ir_value *funcval;
+        ir_instr *ret, *call, *store = NULL;
+        ir_block *block = self->blocks[b];
+
+        if (!block->final || block->instr_count < 2)
+            continue;
+
+        ret = block->instr[block->instr_count-1];
+        if (ret->opcode != INSTR_DONE && ret->opcode != INSTR_RETURN)
+            continue;
+
+        call = block->instr[block->instr_count-2];
+        if (call->opcode >= INSTR_STORE_F && call->opcode <= INSTR_STORE_FNC) {
+            /* account for the unoptimized
+             * CALL
+             * STORE %return, %tmp
+             * RETURN %tmp
+             * version
+             */
+            if (block->instr_count < 3)
+                continue;
+
+            store = call;
+            call = block->instr[block->instr_count-3];
+        }
+
+        if (call->opcode < INSTR_CALL0 || call->opcode > INSTR_CALL8)
+            continue;
+
+        if (store) {
+            /* optimize out the STORE */
+            if (ret->_ops[0]   &&
+                ret->_ops[0]   == store->_ops[0] &&
+                store->_ops[1] == call->_ops[0])
+            {
+                call->_ops[0] = store->_ops[0];
+                if (!ir_block_instr_remove(block, block->instr_count-2))
+                    return false;
+                ir_instr_delete(store);
+            }
+            else
+                continue;
+        }
+
+        if (!call->_ops[0])
+            continue;
+
+        funcval = call->_ops[1];
+        if (!funcval)
+            continue;
+        if (funcval->vtype != TYPE_FUNCTION || funcval->constval.vfunc != self)
+            continue;
+
+        /* now we have a CALL and a RET, check if it's a tailcall */
+        if (ret->_ops[0] && call->_ops[0] != ret->_ops[0])
+            continue;
+
+        block->instr_count -= 2;
+        block->final = false; /* open it back up */
+
+        /* emite parameter-stores */
+        for (p = 0; p < call->params_count; ++p) {
+            /* assert(call->params_count <= self->locals_count); */
+            if (!ir_block_create_store(block, self->locals[p], call->params[p])) {
+                irerror(call->context, "failed to create tailcall store instruction for parameter %i", (int)p);
+                return false;
+            }
+        }
+        if (!ir_block_create_jump(block, self->blocks[0])) {
+            irerror(call->context, "failed to create tailcall jump");
+            return false;
+        }
+
+        ir_instr_delete(call);
+        ir_instr_delete(ret);
+    }
+
+    return true;
+}
+
 bool ir_function_finalize(ir_function *self)
 {
+    if (!ir_function_pass_tailcall(self)) {
+        irerror(self->context, "tailcall optimization pass failed for function %s", self->name);
+        return false;
+    }
+
     if (self->builtin)
         return true;
 
