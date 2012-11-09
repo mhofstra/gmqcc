@@ -44,6 +44,14 @@ static bool opts_output_wasset = false;
 const oper_info *operators      = NULL;
 size_t           operator_count = 0;
 
+/* optimization names */
+static const char *optimization_list[] = {
+# define GMQCC_DEFINE_FLAG(X) #X,
+#  include "optims.def"
+# undef GMQCC_DEFINE_FLAG
+    NULL
+};
+
 typedef struct { char *filename; int type; } argitem;
 VECTOR_MAKE(argitem, items);
 
@@ -517,6 +525,11 @@ srcdone:
 
 cleanup:
     util_debug("COM", "cleaning ...\n");
+
+    printf("optimizations:\n");
+    for (itr = 0; itr < COUNT_OPTIMIZATIONS; ++itr) {
+        printf("   %16s: %lu\n", optimization_list[itr], (unsigned long)optimizations[itr]);
+    }
 
     mem_d(items_data);
 

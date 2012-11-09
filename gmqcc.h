@@ -1023,4 +1023,13 @@ extern uint32_t opts_flags[1 + (COUNT_FLAGS / 32)];
 #define OPTS_WARN(i) (!! (opts_warn[(i)/32] & (1<< ((i)%32))))
 extern uint32_t opts_warn[1 + (COUNT_WARNINGS / 32)];
 
+/* Because we like numbers we'll count the optimizations we made globally */
+enum {
+# define GMQCC_DEFINE_FLAG(X) O_##X,
+#  include "optims.def"
+# undef GMQCC_DEFINE_FLAG
+    COUNT_OPTIMIZATIONS
+};
+extern size_t optimizations[COUNT_OPTIMIZATIONS];
+
 #endif

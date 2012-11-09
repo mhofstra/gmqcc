@@ -25,6 +25,9 @@
 #include "gmqcc.h"
 #include "ir.h"
 
+/* optimization count */
+size_t optimizations[COUNT_OPTIMIZATIONS];
+
 /***********************************************************************
  * Type sizes used at multiple points in the IR codegen
  */
@@ -487,6 +490,7 @@ bool ir_function_pass_tailcall(ir_function *self)
                 ret->_ops[0]   == store->_ops[0] &&
                 store->_ops[1] == call->_ops[0])
             {
+                ++optimizations[O_CALL_RETURN];
                 call->_ops[0] = store->_ops[0];
                 if (!ir_block_instr_remove(block, block->instr_count-2))
                     return false;
@@ -509,6 +513,7 @@ bool ir_function_pass_tailcall(ir_function *self)
         if (ret->_ops[0] && call->_ops[0] != ret->_ops[0])
             continue;
 
+        ++optimizations[O_TAILRECURSION];
         block->instr_count -= 2;
         block->final = false; /* open it back up */
 
