@@ -531,19 +531,19 @@ bool ir_function_pass_tailcall(ir_function *self)
 {
     size_t b, p;
 
-    for (b = 0; b < self->blocks_count; ++b) {
+    for (b = 0; b < vec_size(self->blocks); ++b) {
         ir_value *funcval;
         ir_instr *ret, *call, *store = NULL;
         ir_block *block = self->blocks[b];
 
-        if (!block->final || block->instr_count < 2)
+        if (!block->final || vec_size(block->instr) < 2)
             continue;
 
-        ret = block->instr[block->instr_count-1];
+        ret = block->instr[vec_size(block->instr)-1];
         if (ret->opcode != INSTR_DONE && ret->opcode != INSTR_RETURN)
             continue;
 
-        call = block->instr[block->instr_count-2];
+        call = block->instr[vec_size(block->instr)-2];
         if (call->opcode >= INSTR_STORE_F && call->opcode <= INSTR_STORE_FNC) {
             /* account for the unoptimized
              * CALL
@@ -551,11 +551,11 @@ bool ir_function_pass_tailcall(ir_function *self)
              * RETURN %tmp
              * version
              */
-            if (block->instr_count < 3)
+            if (vec_size(block->instr) < 3)
                 continue;
 
             store = call;
-            call = block->instr[block->instr_count-3];
+            call = block->instr[vec_size(block->instr)-3];
         }
 
         if (call->opcode < INSTR_CALL0 || call->opcode > INSTR_CALL8)
@@ -569,8 +569,10 @@ bool ir_function_pass_tailcall(ir_function *self)
             {
                 ++optimizations[O_CALL_RETURN];
                 call->_ops[0] = store->_ops[0];
-                if (!ir_block_instr_remove(block, block->instr_count-2))
-                    return false;
+                /* is this correct? */
+                vec_shrinkto(block, vec_size(block->instr)-2);
+                /*if (!ir_block_instr_remove(block, vec_size(block->instr_count-2))*/
+                /*return false;*/
                 ir_instr_delete(store);
             }
             else
@@ -591,11 +593,12 @@ bool ir_function_pass_tailcall(ir_function *self)
             continue;
 
         ++optimizations[O_TAILRECURSION];
-        block->instr_count -= 2;
+        vec_shrinkby(block->instr, 2);
+        
         block->final = false; /* open it back up */
 
         /* emite parameter-stores */
-        for (p = 0; p < call->params_count; ++p) {
+        for (p = 0; p < vec_size(call->params); ++p) {
             /* assert(call->params_count <= self->locals_count); */
             if (!ir_block_create_store(block, self->locals[p], call->params[p])) {
                 irerror(call->context, "failed to create tailcall store instruction for parameter %i", (int)p);

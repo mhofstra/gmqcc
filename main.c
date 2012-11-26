@@ -49,8 +49,9 @@ size_t           operator_count = 0;
 
 /* optimization names */
 static const char *optimization_list[] = {
+# define GMQCC_TYPE_OPTIMIZATIONS
 # define GMQCC_DEFINE_FLAG(X) #X,
-#  include "optims.def"
+#  include "opts.def"
 # undef GMQCC_DEFINE_FLAG
     NULL
 };
@@ -492,6 +493,12 @@ int main(int argc, char **argv) {
     if (!options_parse(argc, argv)) {
         return usage();
     }
+    
+    /* turn them on */
+    if (opts_O >= 2) {
+        optimizations[O_CALL_RETURN]   = 1;
+        optimizations[O_TAILRECURSION] = 1;
+    }
 
     /* the standard decides which set of operators to use */
     if (opts_standard == COMPILER_GMQCC) {
@@ -666,7 +673,6 @@ cleanup:
         printf("   %16s: %lu\n", optimization_list[itr], (unsigned long)optimizations[itr]);
     }
 
-    mem_d(items_data);
 
     if (!opts_pp_only)
         parser_cleanup();

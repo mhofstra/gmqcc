@@ -897,8 +897,9 @@ extern uint32_t opts_warn[1 + (COUNT_WARNINGS / 32)];
 
 /* Because we like numbers we'll count the optimizations we made globally */
 enum {
+# define GMQCC_TYPE_OPTIMIZATIONS
 # define GMQCC_DEFINE_FLAG(X) O_##X,
-#  include "optims.def"
+#  include "opts.def"
 # undef GMQCC_DEFINE_FLAG
     COUNT_OPTIMIZATIONS
 };
