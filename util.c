@@ -1,6 +1,7 @@
 /*
  * Copyright (C) 2012
  *     Dale Weiler
+ *     Wolfgang Bumiller
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of
  * this software and associated documentation files (the "Software"), to deal in
@@ -32,14 +33,14 @@ uint64_t mem_dt = 0;
 struct memblock_t {
     const char  *file;
     unsigned int line;
-    unsigned int byte;
+    size_t       byte;
     struct memblock_t *next;
     struct memblock_t *prev;
 };
 
 static struct memblock_t *mem_start = NULL;
 
-void *util_memory_a(unsigned int byte, unsigned int line, const char *file) {
+void *util_memory_a(size_t byte, unsigned int line, const char *file) {
     struct memblock_t *info = malloc(sizeof(struct memblock_t) + byte);
     void              *data = (void*)(info+1);
     if (!info) return NULL;
@@ -79,16 +80,20 @@ void util_memory_d(void *ptrn, unsigned int line, const char *file) {
     free(info);
 }
 
-void *util_memory_r(void *ptrn, unsigned int byte, unsigned int line, const char *file) {
+void *util_memory_r(void *ptrn, size_t byte, unsigned int line, const char *file) {
     struct memblock_t *oldinfo = NULL;
 
     struct memblock_t *newinfo;
 
     if (!ptrn)
         return util_memory_a(byte, line, file);
+    if (!byte) {
+        util_memory_d(ptrn, line, file);
+        return NULL;
+    }
 
     oldinfo = ((struct memblock_t*)ptrn - 1);
-    newinfo = malloc(sizeof(struct memblock_t) + byte);
+    newinfo = ((struct memblock_t*)malloc(sizeof(struct memblock_t) + byte));
 
     util_debug("MEM", "reallocation: % 8u -> %u (bytes) address 0x%08X -> 0x%08X @ %s:%u\n", oldinfo->byte, byte, ptrn, (void*)(newinfo+1), file, line);
 
@@ -97,23 +102,33 @@ void *util_memory_r(void *ptrn, unsigned int byte, unsigned int line, const char
         util_memory_d(oldinfo+1, line, file);
         return NULL;
     }
-    newinfo->line = line;
-    newinfo->byte = byte;
-    newinfo->file = file;
-    newinfo->next = oldinfo->next;
-    newinfo->prev = oldinfo->prev;
-    if (mem_start == oldinfo)
-        mem_start = newinfo;
 
     /* copy old */
     memcpy(newinfo+1, oldinfo+1, oldinfo->byte);
 
-    /* drop old */
-    mem_db += newinfo->byte;
-    mem_db -= oldinfo->byte;
+    /* free old */
+    if (oldinfo->prev)
+        oldinfo->prev->next = oldinfo->next;
+    if (oldinfo->next)
+        oldinfo->next->prev = oldinfo->prev;
+    if (oldinfo == mem_start)
+        mem_start = oldinfo->next;
+
+    /* fill info */
+    newinfo->line = line;
+    newinfo->byte = byte;
+    newinfo->file = file;
+    newinfo->prev = NULL;
+    newinfo->next = mem_start;
+    if (mem_start)
+        mem_start->prev = newinfo;
+    mem_start = newinfo;
+
+    mem_ab -= oldinfo->byte;
+    mem_ab += newinfo->byte;
+
     free(oldinfo);
 
-    /* update */
     return newinfo+1;
 }
 
@@ -238,11 +253,8 @@ void util_debug(const char *area, const char *ms, ...) {
         return;
 
     va_start(va, ms);
-    fprintf (stdout, "DEBUG: ");
-    fputc   ('[',  stdout);
-    fprintf(stdout, "%s", area);
-    fputs   ("] ", stdout);
-    vfprintf(stdout, ms, va);
+    con_out ("[%s] ", area);
+    con_vout(ms, va); 
     va_end  (va);
 }
 
@@ -259,8 +271,8 @@ void util_endianswap(void *m, int s, int l) {
     if(*((char *)&s))
         return;
 
-    for(; w < l; w++) {
-        for(;  i < s << 1; i++) {
+    for(; w < (size_t)l; w++) {
+        for(;  i < (size_t)(s << 1); i++) {
             unsigned char *p = (unsigned char *)m+w*s;
             unsigned char  t = p[i];
             p[i]             = p[s-i-1];
@@ -439,16 +451,10 @@ int util_getline(char **lineptr, size_t *n, FILE *stream) {
         int c = getc(stream);
 
         if (chr < 2) {
-            char *tmp = (char*)mem_a((*n+=(*n>16)?*n:64));
-            if  (!tmp)
-                return -1;
-
-            memcpy(tmp, *lineptr, pos - *lineptr);
+            *n += (*n > 16) ? *n : 64;
             chr = *n + *lineptr - pos;
-            if (!(*lineptr = tmp)) {
-                mem_d (tmp);
+            if (!(*lineptr = (char*)mem_r(*lineptr,*n)))
                 return -1;
-            }
             pos = *n - chr + *lineptr;
         }
 
@@ -472,31 +478,20 @@ int util_getline(char **lineptr, size_t *n, FILE *stream) {
 
 size_t util_strtocmd(const char *in, char *out, size_t outsz) {
     size_t sz = 1;
-    for (; *in && sz < outsz; ++in, ++out, ++sz) {
-        if (*in == '-')
-            *out = '_';
-        else if (isalpha(*in) && !isupper(*in))
-            *out = *in + 'A' - 'a';
-        else
-            *out = *in;
-    }
+    for (; *in && sz < outsz; ++in, ++out, ++sz)
+        *out = (*in == '-') ? '_' : (isalpha(*in) && !isupper(*in)) ? *in + 'A' - 'a': *in;
     *out = 0;
     return sz-1;
 }
 
 size_t util_strtononcmd(const char *in, char *out, size_t outsz) {
     size_t sz = 1;
-    for (; *in && sz < outsz; ++in, ++out, ++sz) {
-        if (*in == '_')
-            *out = '-';
-        else if (isalpha(*in) && isupper(*in))
-            *out = *in + 'a' - 'A';
-        else
-            *out = *in;
-    }
+    for (; *in && sz < outsz; ++in, ++out, ++sz)
+        *out = (*in == '_') ? '-' : (isalpha(*in) && isupper(*in)) ? *in + 'a' - 'A' : *in;
     *out = 0;
     return sz-1;
 }
+
 
 FILE *util_fopen(const char *filename, const char *mode)
 {
@@ -510,3 +505,236 @@ FILE *util_fopen(const char *filename, const char *mode)
 #endif
 }
 
+void _util_vec_grow(void **a, size_t i, size_t s) {
+    size_t m = *a ? 2*_vec_beg(*a)+i : i+1;
+    void  *p = mem_r((*a ? _vec_raw(*a) : NULL), s * m + sizeof(size_t)*2);
+    if (!*a)
+        ((size_t*)p)[1] = 0;
+    *a = (void*)((size_t*)p + 2);
+    _vec_beg(*a) = m;
+}
+
+/*
+ * Hash table for generic data, based on dynamic memory allocations
+ * all around.  This is the internal interface, please look for
+ * EXPOSED INTERFACE comment below
+ */
+typedef struct hash_node_t {
+    char               *key;   /* the key for this node in table */
+    void               *value; /* pointer to the data as void*   */
+    struct hash_node_t *next;  /* next node (linked list)        */
+} hash_node_t;
+
+/*
+ * x86 and x86_64 optimized murmur hash functions for the hashtable
+ * we have individual implementations for optimal performance.
+ * 
+ * Forced inlined as we wrap these up in the actual utility function
+ * below.  These should be autovectorized by gcc.
+ */
+#ifdef __x86_64__
+GMQCC_INLINE uint32_t util_hthashfunc(hash_table_t *ht, const char *key, register size_t seed) {
+    const uint64_t       mix   = 0xC6A4A7935BD1E995;
+    const int            rot   = 47;
+    size_t               size  = strlen(key);
+    uint64_t             hash  = seed ^ (size - mix);
+    uint64_t             alias = 0;
+    const uint64_t      *beg   = (const uint64_t*)key;
+    const uint64_t      *end   = beg + (size / 8);
+    const unsigned char *final = NULL;
+    
+    while (beg != end) {
+        alias = *beg++;
+        
+        alias *= mix;
+        alias ^= alias >> rot;
+        alias *= mix;
+        
+        hash  ^= alias;
+        hash  *= mix;
+    }
+    
+    final = (const unsigned char *)beg;
+    
+    switch (size & 7) {
+        case 7: hash ^= (uint64_t)(final[6]) << 48;
+        case 6: hash ^= (uint64_t)(final[5]) << 40;
+        case 5: hash ^= (uint64_t)(final[4]) << 32;
+        case 4: hash ^= (uint64_t)(final[3]) << 24;
+        case 3: hash ^= (uint64_t)(final[2]) << 16;
+        case 2: hash ^= (uint64_t)(final[1]) << 8;
+        case 1: hash ^= (uint64_t)(final[0]);
+                hash *= mix;
+    }
+    
+    hash ^= hash >> rot;
+    hash *= mix;
+    hash ^= hash >> rot;
+    
+    return (uint32_t)(hash % ht->size);
+}
+    
+#else
+GMQCC_INLINE uint32_t util_hthashfunc(hash_table_t *ht, const char *key, register size_t seed) {
+    const uint32_t       mix   = 0x5BD1E995;
+    const uint32_t       rot   = 24;
+    size_t               size  = strlen(key);
+    uint32_t             hash  = seed ^ size;
+    uint32_t             alias = 0;
+    const unsigned char *data  = (const unsigned char*)ket;
+    
+    while (size >= 4) {
+        alias = *(uint32_t*)data;
+        
+        alias *= mix;
+        alias ^= alias >> rot;
+        alias *= mix;
+        
+        hash  *= mix;
+        hash  ^= alias;
+        
+        data += 4;
+        size -= 4;
+    }
+    
+    switch (size) {
+        case 3: hash ^= data[2] << 16;
+        case 2: hash ^= data[1] << 8;
+        case 1: hash ^= data[0];
+                hash *= mix;
+    }
+    
+    hash ^= hash >> 13;
+    hash *= mix;
+    hash ^= hash >> 15;
+    
+    return hash % ht->size;
+}
+#endif
+
+/* we use the crc table as seeds for the murmur hash :P */
+size_t util_hthash(hash_table_t *ht, const char *key) {
+    static   size_t seed = 0;
+    register size_t hash = util_hthashfunc(ht, key, util_crc32_table[seed]);
+    
+    /* reset seed */
+    if (seed >= sizeof(util_crc32_table) / sizeof(*util_crc32_table))
+        seed  = 0;
+        
+    return hash;
+}
+
+hash_node_t *_util_htnewpair(const char *key, void *value) {
+    hash_node_t *node;
+    if (!(node = mem_a(sizeof(hash_node_t))))
+        return NULL;
+        
+    if (!(node->key = util_strdup(key))) {
+        mem_d(node);
+        return NULL;
+    }
+    
+    node->value = value;
+    node->next  = NULL;
+    
+    return node;
+}
+
+/*
+ * EXPOSED INTERFACE for the hashtable implementation
+ * util_htnew(size)                             -- to make a new hashtable
+ * util_htset(table, key, value, sizeof(value)) -- to set something in the table
+ * util_htget(table, key)                       -- to get something from the table
+ * util_htdel(table)                            -- to delete the table
+ */
+hash_table_t *util_htnew(size_t size) {
+    hash_table_t *hashtable = NULL;
+    if (size < 1)
+        return NULL;
+        
+    if (!(hashtable = mem_a(sizeof(hash_table_t))))
+        return NULL;
+        
+    if (!(hashtable->table = mem_a(sizeof(hash_node_t*) * size))) {
+        mem_d(hashtable);
+        return NULL;
+    }
+    
+    hashtable->size = size;
+    memset(hashtable->table, 0, sizeof(hash_node_t*) * size);
+    
+    return hashtable;
+}
+
+void util_htseth(hash_table_t *ht, const char *key, size_t bin, void *value) {
+    hash_node_t *newnode = NULL;
+    hash_node_t *next    = NULL;
+    hash_node_t *last    = NULL;
+    
+    next = ht->table[bin];
+    
+    while (next && next->key && strcmp(key, next->key) > 0)
+        last = next, next = next->next;
+    
+    /* already in table, do a replace */
+    if (next && next->key && strcmp(key, next->key) == 0) {
+        next->value = value;
+    } else {
+        /* not found, grow a pair man :P */
+        newnode = _util_htnewpair(key, value);
+        if (next == ht->table[bin]) {
+            newnode->next  = next;
+            ht->table[bin] = newnode;
+        } else if (!next) {
+            last->next = newnode;
+        } else {
+            newnode->next = next;
+            last->next = newnode;
+        }
+    }
+}
+
+void util_htset(hash_table_t *ht, const char *key, void *value) {
+    util_htseth(ht, key, util_hthash(ht, key), value);
+}
+
+void *util_htgeth(hash_table_t *ht, const char *key, size_t bin) {
+    hash_node_t *pair = ht->table[bin];
+    
+    while (pair && pair->key && strcmp(key, pair->key) > 0)
+        pair = pair->next;
+        
+    if (!pair || !pair->key || strcmp(key, pair->key) != 0)
+        return NULL;
+        
+    return pair->value;
+}
+
+void *util_htget(hash_table_t *ht, const char *key) {
+    return util_htgeth(ht, key, util_hthash(ht, key));
+}
+
+/*
+ * Free all allocated data in a hashtable, this is quite the amount
+ * of work.
+ */
+void util_htdel(hash_table_t *ht) {
+    size_t i = 0;
+    for (; i < ht->size; i++) {
+        hash_node_t *n = ht->table[i];
+        hash_node_t *p;
+        
+        /* free in list */
+        while (n) {
+            if (n->key)
+                mem_d(n->key);
+            p = n;
+            n = n->next;
+            mem_d(p);
+        }
+        
+    }
+    /* free table */
+    mem_d(ht->table);
+    mem_d(ht);
+}

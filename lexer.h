@@ -1,5 +1,27 @@
-#ifndef GMQCC_LEXER_HDR_
-#define GMQCC_LEXER_HDR_
+/*
+ * Copyright (C) 2012
+ *     Wolfgang Bumiller
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy of
+ * this software and associated documentation files (the "Software"), to deal in
+ * the Software without restriction, including without limitation the rights to
+ * use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+ * of the Software, and to permit persons to whom the Software is furnished to do
+ * so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+#ifndef GMQCC_LEXER_HDR
+#define GMQCC_LEXER_HDR
 
 typedef struct token_s token;
 
@@ -8,7 +30,7 @@ typedef struct token_s token;
 struct token_s {
 	int ttype;
 
-	MEM_VECTOR_MAKE(char, value);
+	char *value;
 
 	union {
 		vector v;
@@ -69,30 +91,6 @@ enum {
     TOKEN_FATAL /* internal error, eg out of memory */
 };
 
-static const char *_tokennames[] = {
-    "TOKEN_START",
-    "TOKEN_IDENT",
-    "TOKEN_TYPENAME",
-    "TOKEN_OPERATOR",
-    "TOKEN_KEYWORD",
-    "TOKEN_DOTS",
-    "TOKEN_STRINGCONST",
-    "TOKEN_CHARCONST",
-    "TOKEN_VECTORCONST",
-    "TOKEN_INTCONST",
-    "TOKEN_FLOATCONST",
-    "TOKEN_WHITE",
-    "TOKEN_EOL",
-    "TOKEN_EOF",
-    "TOKEN_ERROR",
-    "TOKEN_FATAL",
-};
-typedef int
-_all_tokennames_added_[
-	((TOKEN_FATAL - TOKEN_START + 1) ==
-	 (sizeof(_tokennames)/sizeof(_tokennames[0])))
-	? 1 : -1];
-
 typedef struct {
     char *name;
     int   value;
@@ -100,6 +98,10 @@ typedef struct {
 
 typedef struct {
 	FILE   *file;
+	const char *open_string;
+	size_t      open_string_length;
+	size_t      open_string_pos;
+
 	char   *name;
 	size_t  line;
 	size_t  sline; /* line at the start of a token */
@@ -115,16 +117,18 @@ typedef struct {
 	    bool noops;
 	    bool nodigraphs; /* used when lexing string constants */
 	    bool preprocessing; /* whitespace and EOLs become actual tokens */
+	    bool mergelines; /* backslash at the end of a line escapes the newline */
 	} flags;
 
     int framevalue;
-	MEM_VECTOR_MAKE(frame_macro, frames);
+	frame_macro *frames;
 	char *modelname;
+
+	size_t push_line;
 } lex_file;
 
-MEM_VECTOR_PROTO(lex_file, char, token);
-
 lex_file* lex_open (const char *file);
+lex_file* lex_open_string(const char *str, size_t len, const char *name);
 void      lex_close(lex_file   *lex);
 int       lex_do   (lex_file   *lex);
 void      lex_cleanup(void);
@@ -157,11 +161,11 @@ typedef struct {
 static const oper_info c_operators[] = {
     { "(",   0, opid1('('),         ASSOC_LEFT,  99, OP_PREFIX}, /* paren expression - non function call */
 
-    { "++",  1, opid3('S','+','+'), ASSOC_LEFT,  16, OP_SUFFIX},
-    { "--",  1, opid3('S','-','-'), ASSOC_LEFT,  16, OP_SUFFIX},
-
+    { "++",  1, opid3('S','+','+'), ASSOC_LEFT,  15, OP_SUFFIX},
+    { "--",  1, opid3('S','-','-'), ASSOC_LEFT,  15, OP_SUFFIX},
     { ".",   2, opid1('.'),         ASSOC_LEFT,  15, 0 },
     { "(",   0, opid1('('),         ASSOC_LEFT,  15, 0 }, /* function call */
+    { "[",   2, opid1('['),         ASSOC_LEFT,  15, 0 }, /* array subscript */
 
     { "!",   1, opid2('!', 'P'),    ASSOC_RIGHT, 14, OP_PREFIX },
     { "~",   1, opid2('~', 'P'),    ASSOC_RIGHT, 14, OP_PREFIX },
@@ -200,6 +204,7 @@ static const oper_info c_operators[] = {
     { "||",  2, opid2('|','|'),     ASSOC_LEFT,  4,  0 },
 
     { "?",   3, opid2('?',':'),     ASSOC_RIGHT, 3,  0 },
+    { ":",   3, opid2(':','?'),     ASSOC_RIGHT, 3,  0 },
 
     { "=",   2, opid1('='),         ASSOC_RIGHT, 2,  0 },
     { "+=",  2, opid2('+','='),     ASSOC_RIGHT, 2,  0 },
@@ -217,11 +222,62 @@ static const oper_info c_operators[] = {
 };
 static const size_t c_operator_count = (sizeof(c_operators) / sizeof(c_operators[0]));
 
+static const oper_info fte_operators[] = {
+    { "(",   0, opid1('('),         ASSOC_LEFT,  99, OP_PREFIX}, /* paren expression - non function call */
+
+    { "++",  1, opid3('S','+','+'), ASSOC_LEFT,  15, OP_SUFFIX},
+    { "--",  1, opid3('S','-','-'), ASSOC_LEFT,  15, OP_SUFFIX},
+    { ".",   2, opid1('.'),         ASSOC_LEFT,  15, 0 },
+    { "(",   0, opid1('('),         ASSOC_LEFT,  15, 0 }, /* function call */
+    { "[",   2, opid1('['),         ASSOC_LEFT,  15, 0 }, /* array subscript */
+
+    { "!",   1, opid2('!', 'P'),    ASSOC_RIGHT, 14, OP_PREFIX },
+    { "+",   1, opid2('+','P'),     ASSOC_RIGHT, 14, OP_PREFIX },
+    { "-",   1, opid2('-','P'),     ASSOC_RIGHT, 14, OP_PREFIX },
+    { "++",  1, opid3('+','+','P'), ASSOC_RIGHT, 14, OP_PREFIX },
+    { "--",  1, opid3('-','-','P'), ASSOC_RIGHT, 14, OP_PREFIX },
+
+    { "*",   2, opid1('*'),         ASSOC_LEFT,  13, 0 },
+    { "/",   2, opid1('/'),         ASSOC_LEFT,  13, 0 },
+    { "&",   2, opid1('&'),         ASSOC_LEFT,  13, 0 },
+    { "|",   2, opid1('|'),         ASSOC_LEFT,  13, 0 },
+
+    { "+",   2, opid1('+'),         ASSOC_LEFT,  12, 0 },
+    { "-",   2, opid1('-'),         ASSOC_LEFT,  12, 0 },
+
+    { "<",   2, opid1('<'),         ASSOC_LEFT,  10, 0 },
+    { ">",   2, opid1('>'),         ASSOC_LEFT,  10, 0 },
+    { "<=",  2, opid2('<','='),     ASSOC_LEFT,  10, 0 },
+    { ">=",  2, opid2('>','='),     ASSOC_LEFT,  10, 0 },
+    { "==",  2, opid2('=','='),     ASSOC_LEFT,  10,  0 },
+    { "!=",  2, opid2('!','='),     ASSOC_LEFT,  10,  0 },
+
+    { "?",   3, opid2('?',':'),     ASSOC_RIGHT, 9,  0 },
+    { ":",   3, opid2(':','?'),     ASSOC_RIGHT, 9,  0 },
+
+    { "=",   2, opid1('='),         ASSOC_RIGHT, 8,  0 },
+    { "+=",  2, opid2('+','='),     ASSOC_RIGHT, 8,  0 },
+    { "-=",  2, opid2('-','='),     ASSOC_RIGHT, 8,  0 },
+    { "*=",  2, opid2('*','='),     ASSOC_RIGHT, 8,  0 },
+    { "/=",  2, opid2('/','='),     ASSOC_RIGHT, 8,  0 },
+    { "%=",  2, opid2('%','='),     ASSOC_RIGHT, 8,  0 },
+    { "&=",  2, opid2('&','='),     ASSOC_RIGHT, 8,  0 },
+    { "|=",  2, opid2('|','='),     ASSOC_RIGHT, 8,  0 },
+    { "&~=", 2, opid3('&','~','='), ASSOC_RIGHT, 8,  0 },
+
+    { "&&",  2, opid2('&','&'),     ASSOC_LEFT,  5,  0 },
+    { "||",  2, opid2('|','|'),     ASSOC_LEFT,  5,  0 },
+
+    { ",",   2, opid1(','),         ASSOC_LEFT,  2,  0 }
+};
+static const size_t fte_operator_count = (sizeof(fte_operators) / sizeof(fte_operators[0]));
+
 static const oper_info qcc_operators[] = {
     { "(",   0, opid1('('),         ASSOC_LEFT,  99, OP_PREFIX}, /* paren expression - non function call */
 
     { ".",   2, opid1('.'),         ASSOC_LEFT,  15, 0 },
     { "(",   0, opid1('('),         ASSOC_LEFT,  15, 0 }, /* function call */
+    { "[",   2, opid1('['),         ASSOC_LEFT,  15, 0 }, /* array subscript */
 
     { "!",   1, opid2('!', 'P'),    ASSOC_RIGHT, 14, OP_PREFIX },
     { "+",   1, opid2('+','P'),     ASSOC_RIGHT, 14, OP_PREFIX },
@@ -254,7 +310,10 @@ static const oper_info qcc_operators[] = {
     { "&&",  2, opid2('&','&'),     ASSOC_LEFT,  5,  0 },
     { "||",  2, opid2('|','|'),     ASSOC_LEFT,  5,  0 },
 
-    { ",",   2, opid1(','),         ASSOC_LEFT,  1,  0 }
+    { ",",   2, opid1(','),         ASSOC_LEFT,  2,  0 },
+
+    { "?",   3, opid2('?',':'),     ASSOC_RIGHT, 1,  0 },
+    { ":",   3, opid2(':','?'),     ASSOC_RIGHT, 1,  0 }
 };
 static const size_t qcc_operator_count = (sizeof(qcc_operators) / sizeof(qcc_operators[0]));
 

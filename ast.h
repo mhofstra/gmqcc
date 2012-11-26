@@ -31,20 +31,25 @@
 typedef union ast_node_u ast_node;
 typedef union ast_expression_u ast_expression;
 
-typedef struct ast_value_s      ast_value;
-typedef struct ast_function_s   ast_function;
-typedef struct ast_block_s      ast_block;
-typedef struct ast_binary_s     ast_binary;
-typedef struct ast_store_s      ast_store;
-typedef struct ast_binstore_s   ast_binstore;
-typedef struct ast_entfield_s   ast_entfield;
-typedef struct ast_ifthen_s     ast_ifthen;
-typedef struct ast_ternary_s    ast_ternary;
-typedef struct ast_loop_s       ast_loop;
-typedef struct ast_call_s       ast_call;
-typedef struct ast_unary_s      ast_unary;
-typedef struct ast_return_s     ast_return;
-typedef struct ast_member_s     ast_member;
+typedef struct ast_value_s       ast_value;
+typedef struct ast_function_s    ast_function;
+typedef struct ast_block_s       ast_block;
+typedef struct ast_binary_s      ast_binary;
+typedef struct ast_store_s       ast_store;
+typedef struct ast_binstore_s    ast_binstore;
+typedef struct ast_entfield_s    ast_entfield;
+typedef struct ast_ifthen_s      ast_ifthen;
+typedef struct ast_ternary_s     ast_ternary;
+typedef struct ast_loop_s        ast_loop;
+typedef struct ast_call_s        ast_call;
+typedef struct ast_unary_s       ast_unary;
+typedef struct ast_return_s      ast_return;
+typedef struct ast_member_s      ast_member;
+typedef struct ast_array_index_s ast_array_index;
+typedef struct ast_breakcont_s   ast_breakcont;
+typedef struct ast_switch_s      ast_switch;
+typedef struct ast_label_s       ast_label;
+typedef struct ast_goto_s        ast_goto;
 
 enum {
     TYPE_ast_node,
@@ -62,11 +67,17 @@ enum {
     TYPE_ast_call,
     TYPE_ast_unary,
     TYPE_ast_return,
-    TYPE_ast_member
+    TYPE_ast_member,
+    TYPE_ast_array_index,
+    TYPE_ast_breakcont,
+    TYPE_ast_switch,
+    TYPE_ast_label,
+    TYPE_ast_goto
 };
 
 #define ast_istype(x, t) ( ((ast_node_common*)x)->nodetype == (TYPE_##t) )
 #define ast_ctx(node) (((ast_node_common*)(node))->context)
+#define ast_side_effects(node) (((ast_node_common*)(node))->side_effects)
 
 /* Node interface with common components
  */
@@ -81,6 +92,7 @@ typedef struct
      * prevents its dtor from destroying this node as well.
      */
     bool             keep;
+    bool             side_effects;
 } ast_node_common;
 
 #define ast_delete(x) ( ( (ast_node*)(x) ) -> node.destroy )((ast_node*)(x))
@@ -116,7 +128,9 @@ typedef struct
     ast_expression_codegen *codegen;
     int                     vtype;
     ast_expression         *next;
-    MEM_VECTOR_MAKE(ast_value*, params);
+    /* arrays get a member-count */
+    size_t                  count;
+    ast_value*             *params;
     bool                    variadic;
     /* The codegen functions should store their output values
      * so we can call it multiple times without re-evaluating.
@@ -126,7 +140,6 @@ typedef struct
     ir_value               *outl;
     ir_value               *outr;
 } ast_expression_common;
-MEM_VECTOR_PROTO(ast_expression_common, ast_value*, params);
 
 /* Value
  *
@@ -146,7 +159,8 @@ struct ast_value_s
     ast_value  *next;
     */
 
-    bool isconst;
+    bool constant;
+    bool hasvalue;
     union {
         double        vfloat;
         int           vint;
@@ -160,6 +174,12 @@ struct ast_value_s
     size_t uses;
 
     ir_value *ir_v;
+    ir_value **ir_values;
+    size_t   ir_value_count;
+
+    /* ONLY for arrays in progs version up to 6 */
+    ast_value *setter;
+    ast_value *getter;
 };
 
 ast_value* ast_value_new(lex_ctx ctx, const char *name, int qctype);
@@ -171,9 +191,9 @@ bool ast_value_set_name(ast_value*, const char *name);
 
 bool ast_value_codegen(ast_value*, ast_function*, bool lvalue, ir_value**);
 bool ast_local_codegen(ast_value *self, ir_function *func, bool isparam);
-bool ast_global_codegen(ast_value *self, ir_builder *ir);
+bool ast_global_codegen(ast_value *self, ir_builder *ir, bool isfield);
 
-bool GMQCC_WARN ast_value_params_add(ast_value*, ast_value*);
+void ast_value_params_add(ast_value*, ast_value*);
 
 bool ast_compare_type(ast_expression *a, ast_expression *b);
 ast_expression* ast_type_copy(lex_ctx ctx, const ast_expression *ex);
@@ -214,6 +234,8 @@ struct ast_binstore_s
     int             opbin;
     ast_expression *dest;
     ast_expression *source;
+    /* for &~= which uses the destination in a binary in source we can use this */
+    bool            keep_dest;
 };
 ast_binstore* ast_binstore_new(lex_ctx    ctx,
                                int        storeop,
@@ -281,6 +303,7 @@ struct ast_entfield_s
     ast_expression *field;
 };
 ast_entfield* ast_entfield_new(lex_ctx ctx, ast_expression *entity, ast_expression *field);
+ast_entfield* ast_entfield_new_force(lex_ctx ctx, ast_expression *entity, ast_expression *field, const ast_expression *outtype);
 void ast_entfield_delete(ast_entfield*);
 
 bool ast_entfield_codegen(ast_entfield*, ast_function*, bool lvalue, ir_value**);
@@ -295,11 +318,33 @@ struct ast_member_s
     ast_expression_common expression;
     ast_expression *owner;
     unsigned int    field;
+    const char     *name;
 };
-ast_member* ast_member_new(lex_ctx ctx, ast_expression *owner, unsigned int field);
+ast_member* ast_member_new(lex_ctx ctx, ast_expression *owner, unsigned int field, const char *name);
 void ast_member_delete(ast_member*);
 
 bool ast_member_codegen(ast_member*, ast_function*, bool lvalue, ir_value**);
+
+/* Array index access:
+ *
+ * QC forces us to take special action on arrays:
+ * an ast_store on an ast_array_index must not codegen the index,
+ * but call its setter - unless we have an instruction set which supports
+ * what we need.
+ * Any other array index access will be codegened to a call to the getter.
+ * In any case, accessing an element via a compiletime-constant index will
+ * result in quick access to that variable.
+ */
+struct ast_array_index_s
+{
+    ast_expression_common expression;
+    ast_expression *array;
+    ast_expression *index;
+};
+ast_array_index* ast_array_index_new(lex_ctx ctx, ast_expression *array, ast_expression *index);
+void ast_array_index_delete(ast_array_index*);
+
+bool ast_array_index_codegen(ast_array_index*, ast_function*, bool lvalue, ir_value**);
 
 /* Store
  *
@@ -363,9 +408,6 @@ struct ast_ternary_s
     /* It's all just 'expressions', since an ast_block is one too. */
     ast_expression *on_true;
     ast_expression *on_false;
-    /* After a ternary expression we find ourselves in a new IR block
-     * and start with a PHI node */
-    ir_value       *phi_out;
 };
 ast_ternary* ast_ternary_new(lex_ctx ctx, ast_expression *cond, ast_expression *ontrue, ast_expression *onfalse);
 void ast_ternary_delete(ast_ternary*);
@@ -414,6 +456,81 @@ void ast_loop_delete(ast_loop*);
 
 bool ast_loop_codegen(ast_loop*, ast_function*, bool lvalue, ir_value**);
 
+/* Break/Continue
+ */
+struct ast_breakcont_s
+{
+    ast_expression_common expression;
+    bool is_continue;
+};
+ast_breakcont* ast_breakcont_new(lex_ctx ctx, bool iscont);
+void ast_breakcont_delete(ast_breakcont*);
+
+bool ast_breakcont_codegen(ast_breakcont*, ast_function*, bool lvalue, ir_value**);
+
+/* Switch Statements
+ *
+ * A few notes about this: with the original QCVM, no real optimization
+ * is possible. The SWITCH instruction set isn't really helping a lot, since
+ * it only collapes the EQ and IF instructions into one.
+ * Note: Declaring local variables inside caseblocks is normal.
+ * Since we don't have to deal with a stack there's no unnatural behaviour to
+ * be expected from it.
+ * TODO: Ticket #20
+ */
+typedef struct {
+    ast_expression *value; /* #20 will replace this */
+    ast_expression *code;
+} ast_switch_case;
+struct ast_switch_s
+{
+    ast_expression_common expression;
+
+    ast_expression  *operand;
+    ast_switch_case *cases;
+};
+
+ast_switch* ast_switch_new(lex_ctx ctx, ast_expression *op);
+void ast_switch_delete(ast_switch*);
+
+bool ast_switch_codegen(ast_switch*, ast_function*, bool lvalue, ir_value**);
+
+/* Label nodes
+ *
+ * Introduce a label which can be used together with 'goto'
+ */
+struct ast_label_s
+{
+    ast_expression_common expression;
+    const char *name;
+    ir_block   *irblock;
+    ast_goto  **gotos;
+};
+
+ast_label* ast_label_new(lex_ctx ctx, const char *name);
+void ast_label_delete(ast_label*);
+void ast_label_register_goto(ast_label*, ast_goto*);
+
+bool ast_label_codegen(ast_label*, ast_function*, bool lvalue, ir_value**);
+
+/* GOTO nodes
+ *
+ * Go to a label, the label node is filled in at a later point!
+ */
+struct ast_goto_s
+{
+    ast_expression_common expression;
+    const char *name;
+    ast_label  *target;
+    ir_block   *irblock_from;
+};
+
+ast_goto* ast_goto_new(lex_ctx ctx, const char *name);
+void ast_goto_delete(ast_goto*);
+void ast_goto_set_label(ast_goto*, ast_label*);
+
+bool ast_goto_codegen(ast_goto*, ast_function*, bool lvalue, ir_value**);
+
 /* CALL node
  *
  * Contains an ast_expression as target, rather than an ast_function/value.
@@ -428,15 +545,13 @@ struct ast_call_s
 {
     ast_expression_common expression;
     ast_expression *func;
-    MEM_VECTOR_MAKE(ast_expression*, params);
+    ast_expression* *params;
 };
 ast_call* ast_call_new(lex_ctx ctx,
                        ast_expression *funcexpr);
 void ast_call_delete(ast_call*);
 bool ast_call_codegen(ast_call*, ast_function*, bool lvalue, ir_value**);
 bool ast_call_check_types(ast_call*);
-
-MEM_VECTOR_PROTO(ast_call, ast_expression*, params);
 
 /* Blocks
  *
@@ -445,20 +560,18 @@ struct ast_block_s
 {
     ast_expression_common expression;
 
-    MEM_VECTOR_MAKE(ast_value*,      locals);
-    MEM_VECTOR_MAKE(ast_expression*, exprs);
-    MEM_VECTOR_MAKE(ast_expression*, collect);
+    ast_value*      *locals;
+    ast_expression* *exprs;
+    ast_expression* *collect;
 };
 ast_block* ast_block_new(lex_ctx ctx);
 void ast_block_delete(ast_block*);
 bool ast_block_set_type(ast_block*, ast_expression *from);
 
-MEM_VECTOR_PROTO(ast_block, ast_value*, locals);
-MEM_VECTOR_PROTO(ast_block, ast_expression*, exprs);
-MEM_VECTOR_PROTO(ast_block, ast_expression*, collect);
-
 bool ast_block_codegen(ast_block*, ast_function*, bool lvalue, ir_value**);
-bool ast_block_collect(ast_block*, ast_expression*);
+void ast_block_collect(ast_block*, ast_expression*);
+
+void ast_block_add_expr(ast_block*, ast_expression*);
 
 /* Function
  *
@@ -484,6 +597,15 @@ struct ast_function_s
     ir_block    *breakblock;
     ir_block    *continueblock;
 
+#if 0
+    /* In order for early-out logic not to go over
+     * excessive jumps, we remember their target
+     * blocks...
+     */
+    ir_block    *iftrue;
+    ir_block    *iffalse;
+#endif
+
     size_t       labelcount;
     /* in order for thread safety - for the optional
      * channel abesed multithreading... keeping a buffer
@@ -491,7 +613,7 @@ struct ast_function_s
      */
     char         labelbuf[64];
 
-    MEM_VECTOR_MAKE(ast_block*, blocks);
+    ast_block* *blocks;
 };
 ast_function* ast_function_new(lex_ctx ctx, const char *name, ast_value *vtype);
 /* This will NOT delete the underlying ast_value */
@@ -500,8 +622,6 @@ void ast_function_delete(ast_function*);
  * or whatever...
  */
 const char* ast_function_label(ast_function*, const char *prefix);
-
-MEM_VECTOR_PROTO(ast_function, ast_block*, blocks);
 
 bool ast_function_codegen(ast_function *self, ir_builder *builder);
 

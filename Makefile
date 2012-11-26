@@ -1,37 +1,37 @@
-CC     ?= clang
-CFLAGS += -Wall -I. -pedantic-errors
+DESTDIR :=
+PREFIX := /usr/local
+BINDIR := $(PREFIX)/bin
 
+CC     ?= clang
+CFLAGS += -Wall -Wextra -I. -pedantic-errors
 #turn on tons of warnings if clang is present
 ifeq ($(CC), clang)
-	CFLAGS +=                  \
+	CFLAGS +=                         \
 		-Weverything                  \
-		-Wno-missing-prototypes       \
-		-Wno-unused-parameter         \
-		-Wno-sign-compare             \
-		-Wno-implicit-fallthrough     \
-		-Wno-sign-conversion          \
-		-Wno-conversion               \
-		-Wno-disabled-macro-expansion \
 		-Wno-padded                   \
-		-Wno-format-nonliteral
+		-Wno-format-nonliteral        \
+		-Wno-disabled-macro-expansion \
+		-Wno-conversion               \
+		-Wno-missing-prototypes
 
 endif
 ifeq ($(track), no)
     CFLAGS += -DNOTRACK
 endif
 
-OBJ     = \
+OBJ     =             \
           util.o      \
           code.o      \
           ast.o       \
           ir.o        \
-          error.o
-OBJ_A = test/ast-test.o
-OBJ_I = test/ir-test.o
-OBJ_C = main.o lexer.o parser.o
-OBJ_X = exec-standalone.o util.o
+          con.o       \
+          ftepp.o
 
-#default is compiler only
+OBJ_T = test.o util.o con.o
+OBJ_C = main.o lexer.o parser.o
+OBJ_X = exec-standalone.o util.o con.o
+
+
 default: gmqcc
 %.o: %.c
 	$(CC) -c $< -o $@ $(CFLAGS)
@@ -39,25 +39,34 @@ default: gmqcc
 exec-standalone.o: exec.c
 	$(CC) -c $< -o $@ $(CFLAGS) -DQCVM_EXECUTOR=1
 
-# test targets
-test_ast: $(OBJ_A) $(OBJ)
-	$(CC) -o $@ $^ $(CFLAGS)
-test_ir:  $(OBJ_I) $(OBJ)
-	$(CC) -o $@ $^ $(CFLAGS)
-qcvm:     $(OBJ_X)
+qcvm: $(OBJ_X)
 	$(CC) -o $@ $^ $(CFLAGS) -lm
-exec.o: execloop.h
-exec-standalone.o: execloop.h
-test: test_ast test_ir
 
-# compiler target
 gmqcc: $(OBJ_C) $(OBJ)
-	$(CC) -o $@ $^ $(CFLAGS) $(LIBS)
+	$(CC) -o $@ $^ $(CFLAGS)
 
-#all target is test and all
-all: test gmqcc
+testsuite: $(OBJ_T)
+	$(CC) -o $@ $^ $(CFLAGS)
+
+all: gmqcc qcvm testsuite
+
+check: all
+	./testsuite
 
 clean:
-	rm -f *.o gmqcc qcvm test_ast test_ir test/*.o
-	
+	rm -f *.o gmqcc qcvm testsuite *.dat
 
+
+$(OBJ) $(OBJ_C) $(OBJ_X): gmqcc.h
+main.o: lexer.h
+parser.o: ast.h lexer.h
+ast.o: ast.h ir.h
+ir.o: ir.h
+
+install: install-gmqcc install-qcvm
+install-gmqcc: gmqcc
+	install -d -m755          $(DESTDIR)$(BINDIR)
+	install    -m755  gmqcc   $(DESTDIR)$(BINDIR)/gmqcc
+install-qcvm: qcvm
+	install -d -m755          $(DESTDIR)$(BINDIR)
+	install    -m755  qcvm    $(DESTDIR)$(BINDIR)/qcvm

@@ -1,6 +1,7 @@
 /*
  * Copyright (C) 2012
- *     Dale Weiler, Wolfgang Bumiller
+ *     Dale Weiler
+ *     Wolfgang Bumiller
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of
  * this software and associated documentation files (the "Software"), to deal in
@@ -41,7 +42,7 @@
 #endif
 
 #define GMQCC_VERSION_MAJOR 0
-#define GMQCC_VERSION_MINOR 1
+#define GMQCC_VERSION_MINOR 2
 #define GMQCC_VERSION_PATCH 0
 #define GMQCC_VERSION_BUILD(J,N,P) (((J)<<16)|((N)<<8)|(P))
 #define GMQCC_VERSION \
@@ -110,6 +111,13 @@
 #    else
 #       define GMQCC_INLINE inline
 #    endif
+/*
+ * Visual studio has __forcinline we can use.  So lets use that
+ * I suspect it also has just __inline of some sort, but our use
+ * of inline is correct (not guessed), WE WANT IT TO BE INLINE
+ */
+#elseif defined(_MSC_VER)
+#    define GMQCC_INLINE __forceinline
 #else
 #    define GMQCC_INLINE
 #endif /* !__STDC_VERSION__ */
@@ -153,14 +161,14 @@
 
 
 #if defined(__GNUC__) || defined (__CLANG__)
-	typedef int          int64_t  __attribute__((__mode__(__DI__)));
-	typedef unsigned int uint64_t __attribute__((__mode__(__DI__)));
+	typedef int              int64_t  __attribute__((__mode__(__DI__)));
+	typedef unsigned int     uint64_t __attribute__((__mode__(__DI__)));
 #elif defined(_MSC_VER)
 	typedef __int64          int64_t;
 	typedef unsigned __int64 uint64_t;
 #else
     /*
-    * Incoorectly size the types so static assertions below will
+    * Incorrectly size the types so static assertions below will
     * fail.  There is no valid way to get a 64bit type at this point
     * without making assumptions of too many things.
     */
@@ -191,11 +199,12 @@ typedef char intptr_size_is_correct [sizeof(uintptr_t)== sizeof(int*)?1:-1];
 /*===================================================================*/
 FILE *util_fopen(const char *filename, const char *mode);
 
-void *util_memory_a      (unsigned int, unsigned int, const char *);
+void *util_memory_a      (size_t,       unsigned int, const char *);
 void  util_memory_d      (void       *, unsigned int, const char *);
-void *util_memory_r      (void       *, unsigned int, unsigned int, const char *);
+void *util_memory_r      (void       *, size_t,       unsigned int, const char *);
 void  util_meminfo       ();
 
+bool  util_filexists     (const char *);
 bool  util_strupper      (const char *);
 bool  util_strdigit      (const char *);
 bool  util_strncmpexact  (const char *, const char *, size_t);
@@ -215,13 +224,13 @@ uint16_t util_crc16(uint16_t crc, const char *data, size_t len);
 uint32_t util_crc32(uint32_t crc, const char *data, size_t len);
 
 #ifdef NOTRACK
-#    define mem_a(x)   malloc(x)
-#    define mem_d(x)   free  (x)
-#    define mem_r(x,y) realloc((x),(y))
+#    define mem_a(x)    malloc (x)
+#    define mem_d(x)    free   (x)
+#    define mem_r(x, n) realloc(x, n)
 #else
-#    define mem_a(x)   util_memory_a((x), __LINE__, __FILE__)
-#    define mem_d(x)   util_memory_d((x), __LINE__, __FILE__)
-#    define mem_r(x,y) util_memory_r((x), (y), __LINE__, __FILE__)
+#    define mem_a(x)    util_memory_a((x), __LINE__, __FILE__)
+#    define mem_d(x)    util_memory_d((x), __LINE__, __FILE__)
+#    define mem_r(x, n) util_memory_r((x), (n), __LINE__, __FILE__)
 #endif
 
 /*
@@ -232,51 +241,70 @@ uint32_t util_crc32(uint32_t crc, const char *data, size_t len);
 #define FLT2INT(Y) *((int32_t*)&(Y))
 #define INT2FLT(Y) *((float  *)&(Y))
 
-/* Builds vector type (usefull for inside structures) */
-#define VECTOR_SNAP(X,Y) X ## Y
-#define VECTOR_FILL(X,Y) VECTOR_SNAP(X,Y)
-#define VECTOR_TYPE(T,N)                                        \
-    T*     N##_data      = NULL;                                \
-    long   N##_elements  = 0;                                   \
-    long   N##_allocated = 0
-/* Builds vector add */
-#define VECTOR_CORE(T,N)                                        \
-    int    N##_add(T element) {                                 \
-        void *temp = NULL;                                      \
-        if (N##_elements == N##_allocated) {                    \
-            if (N##_allocated == 0) {                           \
-                N##_allocated = 12;                             \
-            } else {                                            \
-                N##_allocated *= 2;                             \
-            }                                                   \
-            if  (!(temp = mem_a(N##_allocated * sizeof(T)))) {  \
-                mem_d(temp);                                    \
-                return -1;                                      \
-            }                                                   \
-            memcpy(temp, N##_data, (N##_elements * sizeof(T))); \
-            mem_d(N##_data);                                    \
-            N##_data = (T*)temp;                                \
-        }                                                       \
-        N##_data[N##_elements] = element;                       \
-        return   N##_elements++;                                \
-    }                                                           \
-    int N##_put(T* elements, size_t len) {                      \
-        len     --;                                             \
-        elements--;                                             \
-        while (N##_add(*++elements) != -1 && len--);            \
-        return N##_elements;                                    \
-    }                                                           \
-    typedef char VECTOR_FILL(extra_semicolon_##N,__COUNTER__)
-#define VECTOR_PROT(T,N)                                        \
-    extern T*     N##_data     ;                                \
-    extern long   N##_elements ;                                \
-    extern long   N##_allocated;                                \
-    int           N##_add(T);                                   \
-    int           N##_put(T *, size_t)
-#define VECTOR_MAKE(T,N) \
-    VECTOR_TYPE(T,N);    \
-    VECTOR_CORE(T,N)
+/* New flexible vector implementation from Dale */
+#define _vec_raw(A) (((size_t*)(void*)(A)) - 2)
+#define _vec_beg(A) (_vec_raw(A)[0])
+#define _vec_end(A) (_vec_raw(A)[1])
+#define _vec_needsgrow(A,N) ((!(A)) || (_vec_end(A) + (N) >= _vec_beg(A)))
+#define _vec_mightgrow(A,N) (_vec_needsgrow((A), (N)) ? (void)_vec_forcegrow((A),(N)) : (void)0)
+#define _vec_forcegrow(A,N) _util_vec_grow(((void**)&(A)), (N), sizeof(*(A)))
+#define _vec_remove(A,S,I,N) (memmove((char*)(A)+(I)*(S),(char*)(A)+((I)+(N))*(S),(S)*(vec_size(A)-(I)-(N))), _vec_end(A)-=(N))
+void _util_vec_grow(void **a, size_t i, size_t s);
+/* exposed interface */
+#define vec_free(A)          ((A) ? (mem_d((void*)_vec_raw(A)), (A) = NULL) : 0)
+#define vec_push(A,V)        (_vec_mightgrow((A),1), (A)[_vec_end(A)++] = (V))
+#define vec_size(A)          ((A) ? _vec_end(A) : 0)
+#define vec_add(A,N)         (_vec_mightgrow((A),(N)), _vec_end(A)+=(N), &(A)[_vec_end(A)-(N)])
+#define vec_last(A)          ((A)[_vec_end(A)-1])
+#define vec_append(A,N,S)    memcpy(vec_add((A), (N)), (S), N * sizeof(*(S)))
+#define vec_remove(A,I,N)    _vec_remove((A), sizeof(*(A)), (I), (N))
+#define vec_pop(A)           vec_remove((A), _vec_end(A)-1, 1)
+/* these are supposed to NOT reallocate */
+#define vec_shrinkto(A,N)    (_vec_end(A) = (N))
+#define vec_shrinkby(A,N)    (_vec_end(A) -= (N))
 
+typedef struct hash_table_t {
+    size_t                size;
+    struct hash_node_t **table;
+} hash_table_t, *ht;
+
+/*
+ * hashtable implementation:
+ * 
+ * Note:
+ *      This was designed for pointers:  you manage the life of the object yourself
+ *      if you do use this for non-pointers please be warned that the object may not
+ *      be valid if the duration of it exceeds (i.e on stack).  So you need to allocate
+ *      yourself, or put those in global scope to ensure duration is for the whole
+ *      runtime.
+ * 
+ * util_htnew(size)                             -- to make a new hashtable
+ * util_htset(table, key, value, sizeof(value)) -- to set something in the table
+ * util_htget(table, key)                       -- to get something from the table
+ * util_htdel(table)                            -- to delete the table
+ * 
+ * example of use:
+ * 
+ * ht    foo  = util_htnew(1024);
+ * int   data = 100;
+ * char *test = "hello world\n";
+ * util_htset(foo, "foo", (void*)&data);
+ * util_gtset(foo, "bar", (void*)test);
+ * 
+ * printf("foo: %d, bar %s",
+ *     *((int *)util_htget(foo, "foo")),
+ *      ((char*)util_htget(foo, "bar"))
+ * );
+ * 
+ * util_htdel(foo);
+ */
+hash_table_t *util_htnew (size_t size);
+void          util_htset (hash_table_t *ht, const char *key, void *value);
+void         *util_htget (hash_table_t *ht, const char *key);
+void          util_htdel (hash_table_t *ht);
+size_t        util_hthash(hash_table_t *ht, const char *key);
+void         *util_htgeth(hash_table_t *ht, const char *key, size_t hash);
+void          util_htseth(hash_table_t *ht, const char *key, size_t hash, void *value);
 /*===================================================================*/
 /*=========================== code.c ================================*/
 /*===================================================================*/
@@ -293,6 +321,9 @@ enum {
     TYPE_POINTER  ,
     TYPE_INTEGER  ,
     TYPE_VARIANT  ,
+    TYPE_STRUCT   ,
+    TYPE_UNION    ,
+    TYPE_ARRAY    ,
 
     TYPE_COUNT
 };
@@ -301,6 +332,7 @@ extern const char *type_name[TYPE_COUNT];
 
 extern size_t type_sizeof[TYPE_COUNT];
 extern uint16_t type_store_instr[TYPE_COUNT];
+extern uint16_t field_store_instr[TYPE_COUNT];
 /* could use type_store_instr + INSTR_STOREP_F - INSTR_STORE_F
  * but this breaks when TYPE_INTEGER is added, since with the enhanced
  * instruction set, the old ones are left untouched, thus the _I instructions
@@ -310,6 +342,7 @@ extern uint16_t type_storep_instr[TYPE_COUNT];
 /* other useful lists */
 extern uint16_t type_eq_instr[TYPE_COUNT];
 extern uint16_t type_ne_instr[TYPE_COUNT];
+extern uint16_t type_not_instr[TYPE_COUNT];
 
 typedef struct {
     uint32_t offset;      /* Offset in file of where data begins  */
@@ -498,24 +531,12 @@ enum {
     VINSTR_COND
 };
 
-/*
- * The symbols below are created by the following
- * expanded macros:
- *
- * VECTOR_MAKE(prog_section_statement, code_statements);
- * VECTOR_MAKE(prog_section_def,       code_defs      );
- * VECTOR_MAKE(prog_section_field,     code_fields    );
- * VECTOR_MAKE(prog_section_function,  code_functions );
- * VECTOR_MAKE(int,                    code_globals   );
- * VECTOR_MAKE(char,                   code_chars     );
- */
-VECTOR_PROT(prog_section_statement, code_statements);
-VECTOR_PROT(prog_section_statement, code_statements);
-VECTOR_PROT(prog_section_def,       code_defs      );
-VECTOR_PROT(prog_section_field,     code_fields    );
-VECTOR_PROT(prog_section_function,  code_functions );
-VECTOR_PROT(int,                    code_globals   );
-VECTOR_PROT(char,                   code_chars     );
+extern prog_section_statement *code_statements;
+extern prog_section_def       *code_defs;
+extern prog_section_field     *code_fields;
+extern prog_section_function  *code_functions;
+extern int                    *code_globals;
+extern char                   *code_chars;
 extern uint16_t code_crc;
 
 typedef float   qcfloat;
@@ -530,6 +551,43 @@ void     code_init        ();
 uint32_t code_genstring   (const char *string);
 uint32_t code_cachedstring(const char *string);
 qcint    code_alloc_field (size_t qcsize);
+
+/*===================================================================*/
+/*============================ con.c ================================*/
+/*===================================================================*/
+enum {
+    CON_BLACK   = 30,
+    CON_RED,
+    CON_GREEN,
+    CON_BROWN,
+    CON_BLUE,
+    CON_MAGENTA,
+    CON_CYAN ,
+    CON_WHITE
+};
+
+/* message level */
+enum {
+    LVL_MSG,
+    LVL_WARNING,
+    LVL_ERROR
+};
+
+
+void con_vprintmsg (int level, const char *name, size_t line, const char *msgtype, const char *msg, va_list ap);
+void con_printmsg  (int level, const char *name, size_t line, const char *msgtype, const char *msg, ...);
+void con_cvprintmsg(void *ctx, int lvl, const char *msgtype, const char *msg, va_list ap);
+void con_cprintmsg (void *ctx, int lvl, const char *msgtype, const char *msg, ...);
+
+void con_close();
+void con_color(int state);
+void con_init ();
+void con_reset();
+int  con_change(const char *out, const char *err);
+int  con_verr  (const char *fmt, va_list va);
+int  con_vout  (const char *fmt, va_list va);
+int  con_err   (const char *fmt, ...);
+int  con_out   (const char *fmt, ...);
 
 /*===================================================================*/
 /*========================= assembler.c =============================*/
@@ -608,188 +666,9 @@ static const struct {
 
     { "END"       , 0, 3 } /* virtual assembler instruction */
 };
-
-void asm_init (const char *, FILE **);
-void asm_close(FILE *);
-void asm_parse(FILE *);
 /*===================================================================*/
-/*============================= ast.c ===============================*/
+/*============================= ir.c ================================*/
 /*===================================================================*/
-#define MEM_VECTOR_PROTO(Towner, Tmem, mem)                   \
-    bool GMQCC_WARN Towner##_##mem##_add(Towner*, Tmem);      \
-    bool GMQCC_WARN Towner##_##mem##_remove(Towner*, size_t)
-
-#define MEM_VECTOR_PROTO_ALL(Towner, Tmem, mem)                    \
-    MEM_VECTOR_PROTO(Towner, Tmem, mem);                           \
-    bool GMQCC_WARN Towner##_##mem##_find(Towner*, Tmem, size_t*); \
-    void Towner##_##mem##_clear(Towner*)
-
-#define MEM_VECTOR_MAKE(Twhat, name) \
-    Twhat  *name;                    \
-    size_t name##_count;             \
-    size_t name##_alloc
-
-#define MEM_VEC_FUN_ADD(Tself, Twhat, mem)                           \
-bool GMQCC_WARN Tself##_##mem##_add(Tself *self, Twhat f)            \
-{                                                                    \
-    Twhat *reall;                                                    \
-    if (self->mem##_count == self->mem##_alloc) {                    \
-        if (!self->mem##_alloc) {                                    \
-            self->mem##_alloc = 16;                                  \
-        } else {                                                     \
-            self->mem##_alloc *= 2;                                  \
-        }                                                            \
-        reall = (Twhat*)mem_a(sizeof(Twhat) * self->mem##_alloc);    \
-        if (!reall) {                                                \
-            return false;                                            \
-        }                                                            \
-        memcpy(reall, self->mem, sizeof(Twhat) * self->mem##_count); \
-        mem_d(self->mem);                                            \
-        self->mem = reall;                                           \
-    }                                                                \
-    self->mem[self->mem##_count++] = f;                              \
-    return true;                                                     \
-}
-
-#define MEM_VEC_FUN_REMOVE(Tself, Twhat, mem)                        \
-bool GMQCC_WARN Tself##_##mem##_remove(Tself *self, size_t idx)      \
-{                                                                    \
-    size_t i;                                                        \
-    Twhat *reall;                                                    \
-    if (idx >= self->mem##_count) {                                  \
-        return true; /* huh... */                                    \
-    }                                                                \
-    for (i = idx; i < self->mem##_count-1; ++i) {                    \
-        self->mem[i] = self->mem[i+1];                               \
-    }                                                                \
-    self->mem##_count--;                                             \
-    if (self->mem##_count < self->mem##_count/2) {                   \
-        self->mem##_alloc /= 2;                                      \
-        reall = (Twhat*)mem_a(sizeof(Twhat) * self->mem##_count);    \
-        if (!reall) {                                                \
-            return false;                                            \
-        }                                                            \
-        memcpy(reall, self->mem, sizeof(Twhat) * self->mem##_count); \
-        mem_d(self->mem);                                            \
-        self->mem = reall;                                           \
-    }                                                                \
-    return true;                                                     \
-}
-
-#define MEM_VEC_FUN_FIND(Tself, Twhat, mem)                     \
-bool GMQCC_WARN Tself##_##mem##_find(Tself *self, Twhat obj, size_t *idx) \
-{                                                               \
-    size_t i;                                                   \
-    for (i = 0; i < self->mem##_count; ++i) {                   \
-        if (self->mem[i] == obj) {                              \
-            if (idx) {                                          \
-                *idx = i;                                       \
-            }                                                   \
-            return true;                                        \
-        }                                                       \
-    }                                                           \
-    return false;                                               \
-}
-
-#define MEM_VEC_FUN_APPEND(Tself, Twhat, mem)                        \
-bool GMQCC_WARN Tself##_##mem##_append(Tself *s, Twhat *p, size_t c) \
-{                                                                    \
-    Twhat *reall;                                                    \
-    size_t oldalloc;                                                 \
-    if (s->mem##_count+c > s->mem##_alloc) {                         \
-        if (!s->mem##_alloc) {                                       \
-            s->mem##_alloc = c < 16 ? 16 : c;                        \
-            s->mem = (Twhat*)mem_a(sizeof(Twhat) * s->mem##_alloc);  \
-        } else {                                                     \
-            oldalloc = s->mem##_alloc;                               \
-            s->mem##_alloc *= 2;                                     \
-            if (s->mem##_count+c >= s->mem##_alloc) {                \
-                s->mem##_alloc = s->mem##_count+c;                   \
-            }                                                        \
-            reall = (Twhat*)mem_a(sizeof(Twhat) * s->mem##_alloc);   \
-            if (!reall) {                                            \
-                s->mem##_alloc = oldalloc;                           \
-                return false;                                        \
-            }                                                        \
-            memcpy(reall, s->mem, sizeof(Twhat) * s->mem##_count);   \
-            mem_d(s->mem);                                           \
-            s->mem = reall;                                          \
-        }                                                            \
-    }                                                                \
-    memcpy(&s->mem[s->mem##_count], p, c*sizeof(*p));                \
-    s->mem##_count += c;                                             \
-    return true;                                                     \
-}
-
-#define MEM_VEC_FUN_RESIZE(Tself, Twhat, mem)                    \
-bool GMQCC_WARN Tself##_##mem##_resize(Tself *s, size_t c)       \
-{                                                                \
-    Twhat *reall;                                                \
-    if (c > s->mem##_alloc) {                                    \
-        reall = (Twhat*)mem_a(sizeof(Twhat) * c);                \
-        if (!reall) { return false; }                            \
-        memcpy(reall, s->mem, sizeof(Twhat) * s->mem##_count);   \
-        s->mem##_alloc = c;                                      \
-        s->mem##_count = c;                                      \
-        mem_d(s->mem);                                           \
-        s->mem = reall;                                          \
-        return true;                                             \
-    }                                                            \
-    s->mem##_count = c;                                          \
-    if (c < (s->mem##_alloc / 2)) {                              \
-        reall = (Twhat*)mem_a(sizeof(Twhat) * c);                \
-        if (!reall) { return false; }                            \
-        memcpy(reall, s->mem, sizeof(Twhat) * c);                \
-        mem_d(s->mem);                                           \
-        s->mem = reall;                                          \
-        s->mem##_alloc = c;                                      \
-    }                                                            \
-    return true;                                                 \
-}
-
-#define MEM_VEC_FUN_CLEAR(Tself, mem)   \
-void Tself##_##mem##_clear(Tself *self) \
-{                                       \
-    if (!self->mem)                     \
-        return;                         \
-    mem_d((void*) self->mem);           \
-    self->mem = NULL;                   \
-    self->mem##_count = 0;              \
-    self->mem##_alloc = 0;              \
-}
-
-#define MEM_VECTOR_CLEAR(owner, mem)  \
-    if ((owner)->mem)                 \
-        mem_d((void*)((owner)->mem)); \
-    (owner)->mem = NULL;              \
-    (owner)->mem##_count = 0;         \
-    (owner)->mem##_alloc = 0
-
-#define MEM_VECTOR_INIT(owner, mem) \
-{                                   \
-    (owner)->mem = NULL;            \
-    (owner)->mem##_count = 0;       \
-    (owner)->mem##_alloc = 0;       \
-}
-
-#define MEM_VECTOR_MOVE(from, mem, to, tm)   \
-{                                            \
-    (to)->tm = (from)->mem;                  \
-    (to)->tm##_count = (from)->mem##_count;  \
-    (to)->tm##_alloc = (from)->mem##_alloc;  \
-    (from)->mem = NULL;                      \
-    (from)->mem##_count = 0;                 \
-    (from)->mem##_alloc = 0;                 \
-}
-
-#define MEM_VEC_FUNCTIONS(Tself, Twhat, mem) \
-MEM_VEC_FUN_REMOVE(Tself, Twhat, mem)        \
-MEM_VEC_FUN_ADD(Tself, Twhat, mem)
-
-#define MEM_VEC_FUNCTIONS_ALL(Tself, Twhat, mem) \
-MEM_VEC_FUNCTIONS(Tself, Twhat, mem)             \
-MEM_VEC_FUN_CLEAR(Tself, mem)                    \
-MEM_VEC_FUN_FIND(Tself, Twhat, mem)
 
 enum store_types {
     store_global,
@@ -866,14 +745,16 @@ typedef struct {
 typedef struct qc_program_s {
     char           *filename;
 
-    MEM_VECTOR_MAKE(prog_section_statement, code);
-    MEM_VECTOR_MAKE(prog_section_def,       defs);
-    MEM_VECTOR_MAKE(prog_section_def,       fields);
-    MEM_VECTOR_MAKE(prog_section_function,  functions);
-    MEM_VECTOR_MAKE(char,                   strings);
-    MEM_VECTOR_MAKE(qcint,                  globals);
-    MEM_VECTOR_MAKE(qcint,                  entitydata);
-    MEM_VECTOR_MAKE(bool,                   entitypool);
+    prog_section_statement *code;
+    prog_section_def       *defs;
+    prog_section_def       *fields;
+    prog_section_function  *functions;
+    char                   *strings;
+    qcint                  *globals;
+    qcint                  *entitydata;
+    bool                   *entitypool;
+
+    const char*            *function_stack;
 
     uint16_t crc16;
 
@@ -882,17 +763,18 @@ typedef struct qc_program_s {
 
     qcint  vmerror;
 
-    MEM_VECTOR_MAKE(size_t, profile);
+    size_t *profile;
 
-    MEM_VECTOR_MAKE(prog_builtin, builtins);
+    prog_builtin *builtins;
+    size_t        builtins_count;
 
     /* size_t ip; */
     qcint  entities;
     size_t entityfields;
     bool   allowworldwrites;
 
-    MEM_VECTOR_MAKE(qcint,         localstack);
-    MEM_VECTOR_MAKE(qc_exec_stack, stack);
+    qcint         *localstack;
+    qc_exec_stack *stack;
     size_t statement;
 
     size_t xflags;
@@ -911,41 +793,29 @@ prog_section_def* prog_getdef    (qc_program *prog, qcint off);
 qcany*            prog_getedict  (qc_program *prog, qcint e);
 qcint             prog_tempstring(qc_program *prog, const char *_str);
 
-/*===================================================================*/
-/*===================== error.c message printer =====================*/
-/*===================================================================*/
-
-#ifndef WIN32
-enum {
-    CON_BLACK   = 30,
-    CON_RED,
-    CON_GREEN,
-    CON_BROWN,
-    CON_BLUE,
-    CON_MAGENTA,
-    CON_CYAN ,
-    CON_WHITE
-};
-#endif
-enum {
-    LVL_MSG,
-    LVL_WARNING,
-    LVL_ERROR
-};
-
-void vprintmsg (int level, const char *name, size_t line, const char *msgtype, const char *msg, va_list ap);
-void printmsg  (int level, const char *name, size_t line, const char *msgtype, const char *msg, ...);
-void cvprintmsg(lex_ctx ctx, int lvl, const char *msgtype, const char *msg, va_list ap);
-void cprintmsg (lex_ctx ctx, int lvl, const char *msgtype, const char *msg, ...);
 
 /*===================================================================*/
 /*===================== parser.c commandline ========================*/
 /*===================================================================*/
 
-bool parser_init   ();
-bool parser_compile(const char *filename);
-bool parser_finish (const char *output);
-void parser_cleanup();
+bool parser_init          ();
+bool parser_compile_file  (const char *filename);
+bool parser_compile_string(const char *name, const char *str);
+bool parser_finish        (const char *output);
+void parser_cleanup       ();
+/* There's really no need to strlen() preprocessed files */
+bool parser_compile_string_len(const char *name, const char *str, size_t len);
+
+/*===================================================================*/
+/*====================== ftepp.c commandline ========================*/
+/*===================================================================*/
+bool ftepp_init             ();
+bool ftepp_preprocess_file  (const char *filename);
+bool ftepp_preprocess_string(const char *name, const char *str);
+void ftepp_finish           ();
+const char *ftepp_get       ();
+void ftepp_flush            ();
+void ftepp_add_define       (const char *source, const char *name);
 
 /*===================================================================*/
 /*======================= main.c commandline ========================*/
@@ -974,28 +844,28 @@ typedef struct {
 /*===================================================================*/
 /* list of -f flags, like -fdarkplaces-string-table-bug */
 enum {
+# define GMQCC_TYPE_FLAGS
 # define GMQCC_DEFINE_FLAG(X) X,
-#  include "flags.def"
-# undef GMQCC_DEFINE_FLAG
+#  include "opts.def"
     COUNT_FLAGS
 };
 static const opts_flag_def opts_flag_list[] = {
+# define GMQCC_TYPE_FLAGS
 # define GMQCC_DEFINE_FLAG(X) { #X, LONGBIT(X) },
-#  include "flags.def"
-# undef GMQCC_DEFINE_FLAG
+#  include "opts.def"
     { NULL, LONGBIT(0) }
 };
 
 enum {
+# define GMQCC_TYPE_WARNS
 # define GMQCC_DEFINE_FLAG(X) WARN_##X,
-#  include "warns.def"
-# undef GMQCC_DEFINE_FLAG
+#  include "opts.def"
     COUNT_WARNINGS
 };
 static const opts_flag_def opts_warn_list[] = {
+# define GMQCC_TYPE_WARNS
 # define GMQCC_DEFINE_FLAG(X) { #X, LONGBIT(WARN_##X) },
-#  include "warns.def"
-# undef GMQCC_DEFINE_FLAG
+#  include "opts.def"
     { NULL, LONGBIT(0) }
 };
 
@@ -1011,11 +881,13 @@ extern const char *opts_output; /* -o file */
 extern int         opts_standard;
 extern bool        opts_debug;
 extern bool        opts_memchk;
+extern bool        opts_dumpfin;
 extern bool        opts_dump;
 extern bool        opts_werror;
 extern bool        opts_forcecrc;
 extern uint16_t    opts_forced_crc;
 extern bool        opts_pp_only;
+extern size_t      opts_max_array_size;
 
 /*===================================================================*/
 #define OPTS_FLAG(i) (!! (opts_flags[(i)/32] & (1<< ((i)%32))))
