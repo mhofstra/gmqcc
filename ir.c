@@ -569,10 +569,8 @@ bool ir_function_pass_tailcall(ir_function *self)
             {
                 ++optimizations[O_CALL_RETURN];
                 call->_ops[0] = store->_ops[0];
-                /* is this correct? */
-                vec_shrinkto(block, vec_size(block->instr)-2);
-                /*if (!ir_block_instr_remove(block, vec_size(block->instr_count-2))*/
-                /*return false;*/
+                /* Blub, this is correct right? */                
+                vec_remove(block, vec_size(block->instr) - 2, 1);
                 ir_instr_delete(store);
             }
             else
