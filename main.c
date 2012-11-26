@@ -455,6 +455,7 @@ int main(int argc, char **argv) {
 
     app_name = argv[0];
     con_init();
+    util_heap = mem_heap_add("utility heap", 33554432, __FILE__, __LINE__);
 
     /* default options / warn flags */
     options_set(opts_warn, WARN_UNKNOWN_CONTROL_SEQUENCE, true);
@@ -659,6 +660,7 @@ cleanup:
         mem_d((char*)opts_output);
 
     lex_cleanup();
-    util_meminfo();
+    mem_dump();
+    mem_destroyall(__FILE__, __LINE__);
     return retval;
 }

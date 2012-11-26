@@ -25,138 +25,11 @@
 #include <errno.h>
 #include "gmqcc.h"
 
-uint64_t mem_ab = 0;
-uint64_t mem_db = 0;
-uint64_t mem_at = 0;
-uint64_t mem_dt = 0;
-
-struct memblock_t {
-    const char  *file;
-    unsigned int line;
-    size_t       byte;
-    struct memblock_t *next;
-    struct memblock_t *prev;
-};
-
-static struct memblock_t *mem_start = NULL;
-
-void *util_memory_a(size_t byte, unsigned int line, const char *file) {
-    struct memblock_t *info = malloc(sizeof(struct memblock_t) + byte);
-    void              *data = (void*)(info+1);
-    if (!info) return NULL;
-    info->line = line;
-    info->byte = byte;
-    info->file = file;
-    info->prev = NULL;
-    info->next = mem_start;
-    if (mem_start)
-        mem_start->prev = info;
-    mem_start = info;
-
-    util_debug("MEM", "allocation:   % 8u (bytes) address 0x%08X @ %s:%u\n", byte, data, file, line);
-    mem_at++;
-    mem_ab += info->byte;
-
-    return data;
-}
-
-void util_memory_d(void *ptrn, unsigned int line, const char *file) {
-    struct memblock_t *info = NULL;
-
-    if (!ptrn) return;
-    info = ((struct memblock_t*)ptrn - 1);
-
-    util_debug("MEM", "released:     % 8u (bytes) address 0x%08X @ %s:%u\n", info->byte, ptrn, file, line);
-    mem_db += info->byte;
-    mem_dt++;
-
-    if (info->prev)
-        info->prev->next = info->next;
-    if (info->next)
-        info->next->prev = info->prev;
-    if (info == mem_start)
-        mem_start = info->next;
-
-    free(info);
-}
-
-void *util_memory_r(void *ptrn, size_t byte, unsigned int line, const char *file) {
-    struct memblock_t *oldinfo = NULL;
-
-    struct memblock_t *newinfo;
-
-    if (!ptrn)
-        return util_memory_a(byte, line, file);
-    if (!byte) {
-        util_memory_d(ptrn, line, file);
-        return NULL;
-    }
-
-    oldinfo = ((struct memblock_t*)ptrn - 1);
-    newinfo = ((struct memblock_t*)malloc(sizeof(struct memblock_t) + byte));
-
-    util_debug("MEM", "reallocation: % 8u -> %u (bytes) address 0x%08X -> 0x%08X @ %s:%u\n", oldinfo->byte, byte, ptrn, (void*)(newinfo+1), file, line);
-
-    /* new data */
-    if (!newinfo) {
-        util_memory_d(oldinfo+1, line, file);
-        return NULL;
-    }
-
-    /* copy old */
-    memcpy(newinfo+1, oldinfo+1, oldinfo->byte);
-
-    /* free old */
-    if (oldinfo->prev)
-        oldinfo->prev->next = oldinfo->next;
-    if (oldinfo->next)
-        oldinfo->next->prev = oldinfo->prev;
-    if (oldinfo == mem_start)
-        mem_start = oldinfo->next;
-
-    /* fill info */
-    newinfo->line = line;
-    newinfo->byte = byte;
-    newinfo->file = file;
-    newinfo->prev = NULL;
-    newinfo->next = mem_start;
-    if (mem_start)
-        mem_start->prev = newinfo;
-    mem_start = newinfo;
-
-    mem_ab -= oldinfo->byte;
-    mem_ab += newinfo->byte;
-
-    free(oldinfo);
-
-    return newinfo+1;
-}
-
-void util_meminfo() {
-    struct memblock_t *info;
-
-    if (!opts_memchk)
-        return;
-
-    for (info = mem_start; info; info = info->next) {
-        util_debug("MEM", "lost:       % 8u (bytes) at %s:%u\n",
-            info->byte,
-            info->file,
-            info->line);
-    }
-
-    util_debug("MEM", "Memory information:\n\
-        Total allocations:   %llu\n\
-        Total deallocations: %llu\n\
-        Total allocated:     %llu (bytes)\n\
-        Total deallocated:   %llu (bytes)\n\
-        Leaks found:         lost %llu (bytes) in %d allocations\n",
-            mem_at,   mem_dt,
-            mem_ab,   mem_db,
-           (mem_ab -  mem_db),
-           (mem_at -  mem_dt)
-    );
-}
+/* 
+ * TODD: see extern mem_heap_t *util_heap from gmqcc.h
+ *       for TODO.
+ */
+mem_heap_t *util_heap = NULL;
 
 /*
  * Some string utility functions, because strdup uses malloc, and we want
@@ -716,10 +589,11 @@ void *util_htget(hash_table_t *ht, const char *key) {
 
 /*
  * Free all allocated data in a hashtable, this is quite the amount
- * of work.
+ * of work.  We need to unroll this table a bit since a lot of time
+ * is wasted here.
  */
 void util_htdel(hash_table_t *ht) {
-    size_t i = 0;
+    size_t i  = 0;
     for (; i < ht->size; i++) {
         hash_node_t *n = ht->table[i];
         hash_node_t *p;
@@ -732,7 +606,6 @@ void util_htdel(hash_table_t *ht) {
             n = n->next;
             mem_d(p);
         }
-        
     }
     /* free table */
     mem_d(ht->table);

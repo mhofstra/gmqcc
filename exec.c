@@ -29,22 +29,6 @@
 
 #include "gmqcc.h"
 
-/*
-(prog_section_statement, code)
-(prog_section_def,       defs)
-(prog_section_def,       fields)
-(prog_section_function,  functions)
-(char,                   strings)
-(qcint,                  globals)
-(qcint,                  entitydata)
-(bool,                   entitypool)
-(qcint,         localstack)
-(qc_exec_stack, stack)
-(size_t, profile)
-(prog_builtin, builtins)
-(const char*, function_stack)
-*/
-
 static void loaderror(const char *fmt, ...)
 {
     int     err = errno;
@@ -818,6 +802,7 @@ int main(int argc, char **argv)
     bool        opts_info  = false;
 
     arg0 = argv[0];
+    util_heap = mem_heap_add("utility heap", 33554432, __FILE__, __LINE__);
 
     if (argc < 2)
         usage();
@@ -937,6 +922,8 @@ int main(int argc, char **argv)
     }
 
     prog_delete(prog);
+    mem_dump();
+    mem_destroyall(__FILE__, __LINE__);
     return 0;
 }
 

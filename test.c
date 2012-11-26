@@ -1026,6 +1026,7 @@ int main(int argc, char **argv) {
     char         *redirerr = (char*)stderr;
     
     con_init();
+    util_heap = mem_heap_add("utility heap", 33554432, __FILE__, __LINE__);
     
     /*
      * Command line option parsing commences now We only need to support
@@ -1062,6 +1063,7 @@ int main(int argc, char **argv) {
     }
     con_change(redirout, redirerr);
     test_perform("tests");
-    util_meminfo();
+    mem_dump();
+    mem_destroyall(__FILE__, __LINE__);
     return 0;
 }

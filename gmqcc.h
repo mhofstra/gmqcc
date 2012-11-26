@@ -199,11 +199,6 @@ typedef char intptr_size_is_correct [sizeof(uintptr_t)== sizeof(int*)?1:-1];
 /*===================================================================*/
 FILE *util_fopen(const char *filename, const char *mode);
 
-void *util_memory_a      (size_t,       unsigned int, const char *);
-void  util_memory_d      (void       *, unsigned int, const char *);
-void *util_memory_r      (void       *, size_t,       unsigned int, const char *);
-void  util_meminfo       ();
-
 bool  util_filexists     (const char *);
 bool  util_strupper      (const char *);
 bool  util_strdigit      (const char *);
@@ -223,15 +218,6 @@ size_t util_strtononcmd (const char *, char *, size_t);
 uint16_t util_crc16(uint16_t crc, const char *data, size_t len);
 uint32_t util_crc32(uint32_t crc, const char *data, size_t len);
 
-#ifdef NOTRACK
-#    define mem_a(x)    malloc (x)
-#    define mem_d(x)    free   (x)
-#    define mem_r(x, n) realloc(x, n)
-#else
-#    define mem_a(x)    util_memory_a((x), __LINE__, __FILE__)
-#    define mem_d(x)    util_memory_d((x), __LINE__, __FILE__)
-#    define mem_r(x, n) util_memory_r((x), (n), __LINE__, __FILE__)
-#endif
 
 /*
  * TODO: make these safer to use.  Currently this only works on
@@ -894,5 +880,78 @@ extern size_t      opts_max_array_size;
 extern uint32_t opts_flags[1 + (COUNT_FLAGS / 32)];
 #define OPTS_WARN(i) (!! (opts_warn[(i)/32] & (1<< ((i)%32))))
 extern uint32_t opts_warn[1 + (COUNT_WARNINGS / 32)];
+
+
+/*===================================================================*/
+/*============================== mem.c ==============================*/
+/*===================================================================*/
+
+/*
+ * Memory information block is responsible for containing
+ * information about a specific allocation.  Since behind
+ * the scenes everything is allocated within integers.
+ * so no "real" size is preserved.  Neither is anything
+ * else such as what file, on what line was a specific
+ * allocation performed.  This implements a doubly-linked-
+ * list to perform this.  Every heap has a pointer to
+ * a mem_block_t, which can then be iterated to get info
+ * about unfreed data.
+ */
+typedef struct mem_block_t {
+    size_t              size;
+    size_t              line;
+    const char         *file;
+    struct mem_block_t *next;
+    struct mem_block_t *prev;
+} mem_block_t;
+
+/*
+ * Space consuming heap, this sucker keeps getting
+ * larger.  There is usually one heap per system
+ * i.e a heap for the IR, a heap for the AST, etc
+ * ,etc.
+ */
+typedef struct {
+    int         *data; /* word sized chunks */
+    size_t       size;
+    size_t       left;
+    
+    /* basic debug info */
+    const char  *file;
+    const char  *desc;
+    size_t       line;
+    mem_block_t *info;
+    uint64_t     allocations; 
+    uint64_t     deallocations;
+    uint64_t     allocated;
+    uint64_t     deallocated;
+} mem_heap_t;
+
+/*
+ * TODO: individual heaps per subsystem of the compiler. I.E one for
+ *       the lexer, one for ast, ir, codegen, parser, etc.
+ */
+extern mem_heap_t *util_heap;
+
+/* 
+ * TODO: macros that expand the correcy file/line variants so we
+ *       done need to do explicit from their use.
+ */
+void        mem_destroyall(const char *file, size_t line);
+mem_heap_t *mem_heap_add  (const char *desc, size_t size, const char *file, size_t line);
+void       *mem_alloc     (mem_heap_t *heap, /********/ size_t size, const char *file, size_t line);
+void       *mem_realloc   (mem_heap_t *heap, void *ptr, size_t size, const char *file, size_t line);
+void        mem_destroy   (mem_heap_t *heap, /********/ const char *file, size_t line);
+void        mem_free      (mem_heap_t *heap, void *ptr, const char *file, size_t line);
+void        mem_heap_dump (mem_heap_t *heap);
+void        mem_dump      ();
+
+/* 
+ * TODO: see the todo at the top of this file for information
+ *       on what is to be done here as well.
+ */
+#define mem_a(X)   mem_alloc  (util_heap, (X),      __FILE__, __LINE__)
+#define mem_d(X)   mem_free   (util_heap, (X),      __FILE__, __LINE__)
+#define mem_r(X,Y) mem_realloc(util_heap, (X), (Y), __FILE__, __LINE__)
 
 #endif

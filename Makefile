@@ -25,11 +25,12 @@ OBJ     =             \
           ast.o       \
           ir.o        \
           con.o       \
-          ftepp.o
+          ftepp.o     \
+          mem.o
 
-OBJ_T = test.o util.o con.o
-OBJ_C = main.o lexer.o parser.o
-OBJ_X = exec-standalone.o util.o con.o
+OBJ_T = test.o util.o con.o mem.o
+OBJ_C = main.o lexer.o parser.o mem.o
+OBJ_X = exec-standalone.o util.o con.o mem.o
 
 
 default: gmqcc
