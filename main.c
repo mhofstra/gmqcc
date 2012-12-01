@@ -503,7 +503,6 @@ int main(int argc, char **argv) {
 
     app_name = argv[0];
     con_init();
-    util_heap = mem_heap_add("utility heap", 33554432, __FILE__, __LINE__);
 
 
     /* init many heaps */
