@@ -1697,9 +1697,9 @@ static ast_expression* parse_expression(parser_t *parser, bool stopatcomma)
 
 static void parser_enterblock(parser_t *parser)
 {
-    vec_push(parser_heap,parser->variables, util_htnew(PARSER_HT_SIZE));
+    vec_push(parser_heap,parser->variables, util_htnew(PARSER_HT_SIZE, parser_heap));
     vec_push(parser_heap,parser->_blocklocals, vec_size(parser->_locals));
-    vec_push(parser_heap,parser->typedefs, util_htnew(TYPEDEF_HT_SIZE));
+    vec_push(parser_heap,parser->typedefs, util_htnew(TYPEDEF_HT_SIZE, parser_heap));
     vec_push(parser_heap,parser->_blocktypedefs, vec_size(parser->_typedefs));
     vec_push(parser_heap,parser->_block_ctx, parser_ctx(parser));
 }
@@ -4332,9 +4332,9 @@ bool parser_init()
         return false;
     }
 
-    vec_push(parser_heap,parser->variables, parser->htfields  = util_htnew(PARSER_HT_SIZE));
-    vec_push(parser_heap,parser->variables, parser->htglobals = util_htnew(PARSER_HT_SIZE));
-    vec_push(parser_heap,parser->typedefs, util_htnew(TYPEDEF_HT_SIZE));
+    vec_push(parser_heap,parser->variables, parser->htfields  = util_htnew(PARSER_HT_SIZE, parser_heap));
+    vec_push(parser_heap,parser->variables, parser->htglobals = util_htnew(PARSER_HT_SIZE, parser_heap));
+    vec_push(parser_heap,parser->typedefs, util_htnew(TYPEDEF_HT_SIZE, parser_heap));
     vec_push(parser_heap,parser->_blocktypedefs, 0);
     return true;
 }

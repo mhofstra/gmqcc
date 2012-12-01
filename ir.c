@@ -284,9 +284,9 @@ ir_builder* ir_builder_new(const char *modulename)
     self->extparams   = NULL;
     self->filenames   = NULL;
     self->filestrings = NULL;
-    self->htglobals   = util_htnew(IR_HT_SIZE);
-    self->htfields    = util_htnew(IR_HT_SIZE);
-    self->htfunctions = util_htnew(IR_HT_SIZE);
+    self->htglobals   = util_htnew(IR_HT_SIZE, ir_heap);
+    self->htfields    = util_htnew(IR_HT_SIZE, ir_heap);
+    self->htfunctions = util_htnew(IR_HT_SIZE, ir_heap);
 
     self->str_immediate = 0;
     self->name = NULL;

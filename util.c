@@ -273,6 +273,7 @@ void _util_vec_grow(mem_heap_t *heap, void **a, size_t i, size_t s) {
     _vec_beg(*a) = m;
 }
 
+
 /*
  * Hash table for generic data, based on dynamic memory allocations
  * all around.  This is the internal interface, please look for
@@ -377,13 +378,13 @@ size_t util_hthash(hash_table_t *ht, const char *key) {
     return hash;
 }
 
-hash_node_t *_util_htnewpair(const char *key, void *value) {
+hash_node_t *_util_htnewpair(mem_heap_t *heap, const char *key, void *value) {
     hash_node_t *node;
-    if (!(node = mem_alloc(util_heap, sizeof(hash_node_t))))
+    if (!(node = mem_alloc(heap, sizeof(hash_node_t))))
         return NULL;
 
-    if (!(node->key = util_strdup(util_heap, key))) {
-        mem_free(util_heap, node);
+    if (!(node->key = util_strdup(heap, key))) {
+        mem_free(heap, node);
         return NULL;
     }
 
@@ -400,20 +401,21 @@ hash_node_t *_util_htnewpair(const char *key, void *value) {
  * util_htget(table, key)                       -- to get something from the table
  * util_htdel(table)                            -- to delete the table
  */
-hash_table_t *util_htnew(size_t size) {
+hash_table_t *util_htnew(size_t size, mem_heap_t *heap) {
     hash_table_t *hashtable = NULL;
     if (size < 1)
         return NULL;
 
-    if (!(hashtable = mem_alloc(util_heap, sizeof(hash_table_t))))
+    if (!(hashtable = mem_alloc(heap, sizeof(hash_table_t))))
         return NULL;
 
-    if (!(hashtable->table = mem_alloc(util_heap, sizeof(hash_node_t*) * size))) {
-        mem_free(util_heap, hashtable);
+    if (!(hashtable->table = mem_alloc(heap, sizeof(hash_node_t*) * size))) {
+        mem_free(heap, hashtable);
         return NULL;
     }
 
     hashtable->size = size;
+    hashtable->heap = heap;
     memset(hashtable->table, 0, sizeof(hash_node_t*) * size);
 
     return hashtable;
@@ -434,7 +436,7 @@ void util_htseth(hash_table_t *ht, const char *key, size_t bin, void *value) {
         next->value = value;
     } else {
         /* not found, grow a pair man :P */
-        newnode = _util_htnewpair(key, value);
+        newnode = _util_htnewpair(ht->heap, key, value);
         if (next == ht->table[bin]) {
             newnode->next  = next;
             ht->table[bin] = newnode;
@@ -481,13 +483,13 @@ void util_htdel(hash_table_t *ht) {
         /* free in list */
         while (n) {
             if (n->key)
-                mem_free(util_heap, n->key);
+                mem_free(ht->heap, n->key);
             p = n;
             n = n->next;
-            mem_free(util_heap, p);
+            mem_free(ht->heap, p);
         }
     }
     /* free table */
-    mem_free(util_heap, ht->table);
-    mem_free(util_heap, ht);
+    mem_free(ht->heap, ht->table);
+    mem_free(ht->heap, ht);
 }

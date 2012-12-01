@@ -293,6 +293,7 @@ void _util_vec_grow(mem_heap_t *, void **a, size_t i, size_t s);
 typedef struct hash_table_t {
     size_t                size;
     struct hash_node_t **table;
+    mem_heap_t          *heap;
 } hash_table_t, *ht;
 
 /*
@@ -325,7 +326,7 @@ typedef struct hash_table_t {
  *
  * util_htdel(foo);
  */
-hash_table_t *util_htnew (size_t size);
+hash_table_t *util_htnew (size_t size, mem_heap_t *);
 void          util_htset (hash_table_t *ht, const char *key, void *value);
 void         *util_htget (hash_table_t *ht, const char *key);
 void          util_htdel (hash_table_t *ht);
