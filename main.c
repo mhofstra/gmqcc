@@ -25,7 +25,10 @@
 #include "lexer.h"
 
 uint32_t    opts_flags[1 + (COUNT_FLAGS / 32)];
-uint32_t    opts_warn [1 + (COUNT_WARNINGS / 32)];
+uint32_t    opts_optimization[1 + (COUNT_OPTIMIZATIONS / 32)];
+
+/* counter increased in ir.c */
+unsigned int optimization_count[COUNT_OPTIMIZATIONS];
 
 uint32_t    opts_O        = 1;
 const char *opts_output   = "progs.dat";
@@ -34,10 +37,9 @@ bool        opts_debug    = false;
 bool        opts_memchk   = false;
 bool        opts_dumpfin  = false;
 bool        opts_dump     = false;
-bool        opts_werror   = false;
 bool        opts_forcecrc = false;
 bool        opts_pp_only  = false;
-size_t      opts_max_array_size = 1024;
+size_t      opts_max_array_size = (1024 << 3);
 
 uint16_t    opts_forced_crc;
 
@@ -113,6 +115,9 @@ static bool options_setflag(const char *name, bool on) {
 static bool options_setwarn(const char *name, bool on) {
     return options_setflag_all(name, on, opts_warn, opts_warn_list, COUNT_WARNINGS);
 }
+static bool options_setoptim(const char *name, bool on) {
+    return options_setflag_all(name, on, opts_optimization, opts_opt_list, COUNT_OPTIMIZATIONS);
+}
 
 static bool options_witharg(int *argc_, char ***argv_, char **out) {
     int  argc   = *argc_;
@@ -180,6 +185,13 @@ static void options_set(uint32_t *flags, size_t idx, bool on)
 #endif
 }
 
+static void set_optimizations(unsigned int level)
+{
+    size_t i;
+    for (i = 0; i < COUNT_OPTIMIZATIONS; ++i)
+        options_set(opts_optimization, i, level >= opts_opt_oflag[i]);
+}
+
 static bool options_parse(int argc, char **argv) {
     bool argend = false;
     size_t itr;
@@ -232,7 +244,7 @@ static bool options_parse(int argc, char **argv) {
                 con_change(redirout, redirerr);
                 continue;
             }
-            
+
             /* show defaults (like pathscale) */
             if (!strcmp(argv[0]+1, "show-defaults")) {
                 size_t itr;
@@ -240,16 +252,16 @@ static bool options_parse(int argc, char **argv) {
                 for (itr = 0; itr < COUNT_FLAGS; ++itr) {
                     if (!OPTS_FLAG(itr))
                         continue;
-                        
+
                     memset(buffer, 0, sizeof(buffer));
                     util_strtononcmd(opts_flag_list[itr].name, buffer, strlen(opts_flag_list[itr].name) + 1);
-    
+
                     con_out("-f%s ", buffer);
                 }
                 for (itr = 0; itr < COUNT_WARNINGS; ++itr) {
                     if (!OPTS_WARN(itr))
                         continue;
-                    
+
                     memset(buffer, 0, sizeof(buffer));
                     util_strtononcmd(opts_warn_list[itr].name, buffer, strlen(opts_warn_list[itr].name) + 1);
                     con_out("-W%s ", buffer);
@@ -354,10 +366,37 @@ static bool options_parse(int argc, char **argv) {
 
                 case 'O':
                     if (!options_witharg(&argc, &argv, &argarg)) {
-                        con_out("option -O requires a numerical argument\n");
+                        con_out("option -O requires a numerical argument, or optimization name with an optional 'no-' prefix\n");
                         return false;
                     }
-                    opts_O = atoi(argarg);
+                    if (isdigit(argarg[0])) {
+                        opts_O = atoi(argarg);
+                        set_optimizations(opts_O);
+                    } else {
+                        util_strtocmd(argarg, argarg, strlen(argarg)+1);
+                        if (!strcmp(argarg, "HELP")) {
+                            con_out("Possible optimizations:\n");
+                            for (itr = 0; itr < COUNT_OPTIMIZATIONS; ++itr) {
+                                util_strtononcmd(opts_opt_list[itr].name, buffer, sizeof(buffer));
+                                con_out(" -O%-20s (-O%u)\n", buffer, opts_opt_oflag[itr]);
+                            }
+                            exit(0);
+                        }
+                        else if (!strcmp(argarg, "ALL"))
+                            set_optimizations(opts_O = 9999);
+                        else if (!strncmp(argarg, "NO_", 3)) {
+                            if (!options_setoptim(argarg+3, false)) {
+                                con_out("unknown optimization: %s\n", argarg+3);
+                                return false;
+                            }
+                        }
+                        else {
+                            if (!options_setoptim(argarg, true)) {
+                                con_out("unknown optimization: %s\n", argarg);
+                                return false;
+                            }
+                        }
+                    }
                     break;
 
                 case 'o':
@@ -617,9 +656,11 @@ srcdone:
                         goto cleanup;
                     }
                     data = ftepp_get();
-                    if (!parser_compile_string_len(items[itr].filename, data, vec_size(data)-1)) {
-                        retval = 1;
-                        goto cleanup;
+                    if (vec_size(data)) {
+                        if (!parser_compile_string_len(items[itr].filename, data, vec_size(data))) {
+                            retval = 1;
+                            goto cleanup;
+                        }
                     }
                     ftepp_flush();
                 }
@@ -647,6 +688,14 @@ srcdone:
     }
 
     /* stuff */
+
+    if (!opts_pp_only) {
+        for (itr = 0; itr < COUNT_OPTIMIZATIONS; ++itr) {
+            if (optimization_count[itr]) {
+                con_out("%s: %u\n", opts_opt_list[itr].name, (unsigned int)optimization_count[itr]);
+            }
+        }
+    }
 
 cleanup:
     util_debug("COM", "cleaning ...\n");

@@ -441,7 +441,7 @@ static bool lex_try_pragma(lex_file *lex)
         goto unroll;
     }
 
-    for (ch = lex_getch(lex); vec_size(param) < 32 && ch != ')' && ch != '\n'; ch = lex_getch(lex))
+    for (ch = lex_getch(lex); vec_size(param) < 1024 && ch != ')' && ch != '\n'; ch = lex_getch(lex))
         vec_push(param, ch);
     vec_push(param, 0);
 
@@ -547,10 +547,10 @@ printf(   "line one\n"
  *    here is to store the line of the first character after skipping
  *    the initial whitespace in lex->sline, this happens in lex_do.
  */
-static int lex_skipwhite(lex_file *lex)
+static int lex_skipwhite(lex_file *lex, bool hadwhite)
 {
     int ch = 0;
-    bool haswhite = false;
+    bool haswhite = hadwhite;
 
     do
     {
@@ -742,6 +742,7 @@ static bool lex_finish_frames(lex_file *lex)
 static int GMQCC_WARN lex_finish_string(lex_file *lex, int quote)
 {
     int ch = 0;
+    int nextch;
 
     while (ch != EOF)
     {
@@ -778,7 +779,61 @@ static int GMQCC_WARN lex_finish_string(lex_file *lex, int quote)
             case 't':  ch = '\t'; break;
             case 'f':  ch = '\f'; break;
             case 'v':  ch = '\v'; break;
+            case 'x':
+            case 'X':
+                /* same procedure as in fteqcc */
+                ch = 0;
+                nextch = lex_getch(lex);
+                if      (nextch >= '0' && nextch <= '9')
+                    ch += nextch - '0';
+                else if (nextch >= 'a' && nextch <= 'f')
+                    ch += nextch - 'a' + 10;
+                else if (nextch >= 'A' && nextch <= 'F')
+                    ch += nextch - 'A' + 10;
+                else {
+                    lexerror(lex, "bad character code");
+                    lex_ungetch(lex, nextch);
+                    return (lex->tok.ttype = TOKEN_ERROR);
+                }
+
+                ch *= 0x10;
+                nextch = lex_getch(lex);
+                if      (nextch >= '0' && nextch <= '9')
+                    ch += nextch - '0';
+                else if (nextch >= 'a' && nextch <= 'f')
+                    ch += nextch - 'a' + 10;
+                else if (nextch >= 'A' && nextch <= 'F')
+                    ch += nextch - 'A' + 10;
+                else {
+                    lexerror(lex, "bad character code");
+                    lex_ungetch(lex, nextch);
+                    return (lex->tok.ttype = TOKEN_ERROR);
+                }
+                break;
+
+            /* fteqcc support */
+            case '0': case '1': case '2': case '3':
+            case '4': case '5': case '6': case '7':
+            case '8': case '9':
+                ch = 18 + ch - '0';
+                break;
+            case '<':  ch = 29; break;
+            case '-':  ch = 30; break;
+            case '>':  ch = 31; break;
+            case '[':  ch = 16; break;
+            case ']':  ch = 17; break;
+            case '{':
+                ch = 0;
+                for (nextch = lex_getch(lex); nextch != '}'; nextch = lex_getch(lex)) {
+                    ch = ch * 10 + nextch - '0';
+                    if (nextch < '0' || nextch > '9' || ch > 255) {
+                        lexerror(lex, "bad character code");
+                        return (lex->tok.ttype = TOKEN_ERROR);
+                    }
+                }
+                break;
             case '\n':  ch = '\n'; break;
+
             default:
                 lexwarn(lex, WARN_UNKNOWN_CONTROL_SEQUENCE, "unrecognized control sequence: \\%c", ch);
                 /* so we just add the character plus backslash no matter what it actually is */
@@ -875,6 +930,7 @@ static int GMQCC_WARN lex_finish_digit(lex_file *lex, int lastch)
 int lex_do(lex_file *lex)
 {
     int ch, nextch, thirdch;
+    bool hadwhite = false;
 
     lex_token_new(lex);
 #if 0
@@ -883,7 +939,8 @@ int lex_do(lex_file *lex)
 #endif
 
     while (true) {
-        ch = lex_skipwhite(lex);
+        ch = lex_skipwhite(lex, hadwhite);
+        hadwhite = true;
         if (!lex->flags.mergelines || ch != '\\')
             break;
         ch = lex_getch(lex);
@@ -914,7 +971,7 @@ int lex_do(lex_file *lex)
     }
 
     /* modelgen / spiritgen commands */
-    if (ch == '$') {
+    if (ch == '$' && !lex->flags.preprocessing) {
         const char *v;
         size_t frame;
 
@@ -1267,7 +1324,7 @@ int lex_do(lex_file *lex)
         while (!lex->flags.preprocessing && lex->tok.ttype == TOKEN_STRINGCONST)
         {
             /* Allow c style "string" "continuation" */
-            ch = lex_skipwhite(lex);
+            ch = lex_skipwhite(lex, false);
             if (ch != '"') {
                 lex_ungetch(lex, ch);
                 break;
@@ -1324,6 +1381,12 @@ int lex_do(lex_file *lex)
         lex->tok.ttype = lex_finish_digit(lex, ch);
         lex_endtoken(lex);
         return lex->tok.ttype;
+    }
+
+    if (lex->flags.preprocessing) {
+        lex_tokench(lex, ch);
+        lex_endtoken(lex);
+        return (lex->tok.ttype = ch);
     }
 
     lexerror(lex, "unknown token");

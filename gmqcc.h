@@ -234,7 +234,7 @@ uint32_t util_crc32(uint32_t crc, const char *data, size_t len);
 #define _vec_needsgrow(A,N) ((!(A)) || (_vec_end(A) + (N) >= _vec_beg(A)))
 #define _vec_mightgrow(A,N) (_vec_needsgrow((A), (N)) ? (void)_vec_forcegrow((A),(N)) : (void)0)
 #define _vec_forcegrow(A,N) _util_vec_grow(((void**)&(A)), (N), sizeof(*(A)))
-#define _vec_remove(A,S,I,N) (memmove((char*)(A)+(I)*(S),(char*)(A)+((I)+(N))*(S),(S)*(vec_size(A)-(I)-(N))), _vec_end(A)-=(N))
+#define _vec_remove(A,S,I,N) (memmove((char*)(A)+(I)*(S),(char*)(A)+((I)+(N))*(S),(S)*(_vec_end(A)-(I)-(N))), _vec_end(A)-=(N))
 void _util_vec_grow(void **a, size_t i, size_t s);
 /* exposed interface */
 #define vec_free(A)          ((A) ? (mem_d((void*)_vec_raw(A)), (A) = NULL) : 0)
@@ -244,7 +244,7 @@ void _util_vec_grow(void **a, size_t i, size_t s);
 #define vec_last(A)          ((A)[_vec_end(A)-1])
 #define vec_append(A,N,S)    memcpy(vec_add((A), (N)), (S), N * sizeof(*(S)))
 #define vec_remove(A,I,N)    _vec_remove((A), sizeof(*(A)), (I), (N))
-#define vec_pop(A)           vec_remove((A), _vec_end(A)-1, 1)
+#define vec_pop(A)           (_vec_end(A)-=1)
 /* these are supposed to NOT reallocate */
 #define vec_shrinkto(A,N)    (_vec_end(A) = (N))
 #define vec_shrinkby(A,N)    (_vec_end(A) -= (N))
@@ -256,32 +256,32 @@ typedef struct hash_table_t {
 
 /*
  * hashtable implementation:
- * 
+ *
  * Note:
  *      This was designed for pointers:  you manage the life of the object yourself
  *      if you do use this for non-pointers please be warned that the object may not
  *      be valid if the duration of it exceeds (i.e on stack).  So you need to allocate
  *      yourself, or put those in global scope to ensure duration is for the whole
  *      runtime.
- * 
+ *
  * util_htnew(size)                             -- to make a new hashtable
  * util_htset(table, key, value, sizeof(value)) -- to set something in the table
  * util_htget(table, key)                       -- to get something from the table
  * util_htdel(table)                            -- to delete the table
- * 
+ *
  * example of use:
- * 
+ *
  * ht    foo  = util_htnew(1024);
  * int   data = 100;
  * char *test = "hello world\n";
  * util_htset(foo, "foo", (void*)&data);
  * util_gtset(foo, "bar", (void*)test);
- * 
+ *
  * printf("foo: %d, bar %s",
  *     *((int *)util_htget(foo, "foo")),
  *      ((char*)util_htget(foo, "bar"))
  * );
- * 
+ *
  * util_htdel(foo);
  */
 hash_table_t *util_htnew (size_t size);
@@ -313,6 +313,11 @@ enum {
 
     TYPE_COUNT
 };
+
+/* const/var qualifiers */
+#define CV_NONE  0
+#define CV_CONST 1
+#define CV_VAR  -1
 
 extern const char *type_name[TYPE_COUNT];
 
@@ -424,7 +429,7 @@ typedef struct {
     uint32_t  profile;    /* Always zero (engine uses this)       */
     uint32_t  name;       /* name of function in string table     */
     uint32_t  file;       /* file of the source file              */
-    uint32_t  nargs;      /* number of arguments                  */
+    int32_t   nargs;      /* number of arguments                  */
     uint8_t   argsize[8]; /* size of arguments (keep 8 always?)   */
 } prog_section_function;
 
@@ -518,6 +523,7 @@ enum {
 };
 
 extern prog_section_statement *code_statements;
+extern int                    *code_linenums;
 extern prog_section_def       *code_defs;
 extern prog_section_field     *code_fields;
 extern prog_section_function  *code_functions;
@@ -532,11 +538,24 @@ typedef int32_t qcint;
  * code_write -- writes out the compiled file
  * code_init  -- prepares the code file
  */
-bool     code_write       (const char *filename);
+bool     code_write       (const char *filename, const char *lno);
 void     code_init        ();
 uint32_t code_genstring   (const char *string);
 uint32_t code_cachedstring(const char *string);
 qcint    code_alloc_field (size_t qcsize);
+
+/* this function is used to keep statements and linenumbers together */
+void     code_push_statement(prog_section_statement *stmt, int linenum);
+
+/*
+ * A shallow copy of a lex_file to remember where which ast node
+ * came from.
+ */
+typedef struct {
+    const char *file;
+    size_t      line;
+} lex_ctx;
+
 
 /*===================================================================*/
 /*============================ con.c ================================*/
@@ -574,6 +593,13 @@ int  con_verr  (const char *fmt, va_list va);
 int  con_vout  (const char *fmt, va_list va);
 int  con_err   (const char *fmt, ...);
 int  con_out   (const char *fmt, ...);
+
+/* error/warning interface */
+extern size_t compile_errors;
+extern size_t compile_warnings;
+
+void compile_error(lex_ctx ctx, const char *msg, ...);
+bool GMQCC_WARN compile_warning(lex_ctx ctx, int warntype, const char *fmt, ...);
 
 /*===================================================================*/
 /*========================= assembler.c =============================*/
@@ -672,15 +698,6 @@ vector  vec3_add  (vector, vector);
 vector  vec3_sub  (vector, vector);
 qcfloat vec3_mulvv(vector, vector);
 vector  vec3_mulvf(vector, float);
-
-/*
- * A shallow copy of a lex_file to remember where which ast node
- * came from.
- */
-typedef struct {
-    const char *file;
-    size_t      line;
-} lex_ctx;
 
 /*===================================================================*/
 /*============================= exec.c ==============================*/
@@ -855,6 +872,26 @@ static const opts_flag_def opts_warn_list[] = {
     { NULL, LONGBIT(0) }
 };
 
+enum {
+# define GMQCC_TYPE_OPTIMIZATIONS
+# define GMQCC_DEFINE_FLAG(NAME, MIN_O) OPTIM_##NAME,
+#  include "opts.def"
+    COUNT_OPTIMIZATIONS
+};
+static const opts_flag_def opts_opt_list[] = {
+# define GMQCC_TYPE_OPTIMIZATIONS
+# define GMQCC_DEFINE_FLAG(NAME, MIN_O) { #NAME, LONGBIT(OPTIM_##NAME) },
+#  include "opts.def"
+    { NULL, LONGBIT(0) }
+};
+static const unsigned int opts_opt_oflag[] = {
+# define GMQCC_TYPE_OPTIMIZATIONS
+# define GMQCC_DEFINE_FLAG(NAME, MIN_O) MIN_O,
+#  include "opts.def"
+    0
+};
+extern unsigned int optimization_count[COUNT_OPTIMIZATIONS];
+
 /* other options: */
 enum {
     COMPILER_QCC,     /* circa  QuakeC */
@@ -880,6 +917,8 @@ extern size_t      opts_max_array_size;
 extern uint32_t opts_flags[1 + (COUNT_FLAGS / 32)];
 #define OPTS_WARN(i) (!! (opts_warn[(i)/32] & (1<< ((i)%32))))
 extern uint32_t opts_warn[1 + (COUNT_WARNINGS / 32)];
+#define OPTS_OPTIMIZATION(i) (!! (opts_optimization[(i)/32] & (1<< ((i)%32))))
+extern uint32_t opts_optimization[1 + (COUNT_OPTIMIZATIONS / 32)];
 
 
 /*===================================================================*/

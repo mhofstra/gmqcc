@@ -55,7 +55,6 @@ typedef struct {
 typedef struct {
     lex_file    *lex;
     int          token;
-    bool         newline;
     unsigned int errors;
 
     bool         output_on;
@@ -136,7 +135,7 @@ static void pptoken_delete(pptoken *self)
 static ppmacro *ppmacro_new(lex_ctx ctx, const char *name)
 {
     ppmacro *macro = (ppmacro*)mem_a(sizeof(ppmacro));
-    
+
     (void)ctx;
     memset(macro, 0, sizeof(*macro));
     macro->name = util_strdup(name);
@@ -994,12 +993,6 @@ static char *ftepp_include_find_path(const char *file, const char *pathfile)
         memcpy(vec_add(filename, len), pathfile, len);
         vec_push(filename, '/');
     }
-    else {
-        len = strlen(pathfile);
-        memcpy(vec_add(filename, len), pathfile, len);
-        if (vec_last(filename) != '/')
-            vec_push(filename, '/');
-    }
 
     len = strlen(file);
     memcpy(vec_add(filename, len+1), file, len);
@@ -1062,7 +1055,7 @@ static bool ftepp_include(ftepp_t *ftepp)
     }
     inlex = lex_open(filename);
     if (!inlex) {
-        ftepp_error(ftepp, "failed to open include file `%s`", filename);
+        ftepp_error(ftepp, "open failed on include file `%s`", filename);
         vec_free(filename);
         return false;
     }
@@ -1220,8 +1213,13 @@ static bool ftepp_hash(ftepp_t *ftepp)
                 break;
             }
             else {
-                ftepp_error(ftepp, "unrecognized preprocessor directive: `%s`", ftepp_tokval(ftepp));
-                return false;
+                if (ftepp->output_on) {
+                    ftepp_error(ftepp, "unrecognized preprocessor directive: `%s`", ftepp_tokval(ftepp));
+                    return false;
+                } else {
+                    ftepp_next(ftepp);
+                    break;
+                }
             }
             /* break; never reached */
         default:
@@ -1260,18 +1258,17 @@ static bool ftepp_preprocess(ftepp_t *ftepp)
         if (ftepp->token >= TOKEN_EOF)
             break;
 #if 0
-        ftepp->newline = newline;
-        newline = false;
-#else
-        /* For the sake of FTE compatibility... FU, really */
-        ftepp->newline = newline = true;
+        newline = true;
 #endif
 
         switch (ftepp->token) {
             case TOKEN_KEYWORD:
             case TOKEN_IDENT:
             case TOKEN_TYPENAME:
-                macro = ftepp_macro_find(ftepp, ftepp_tokval(ftepp));
+                if (ftepp->output_on)
+                    macro = ftepp_macro_find(ftepp, ftepp_tokval(ftepp));
+                else
+                    macro = NULL;
                 if (!macro) {
                     ftepp_out(ftepp, ftepp_tokval(ftepp), false);
                     ftepp_next(ftepp);
@@ -1281,7 +1278,7 @@ static bool ftepp_preprocess(ftepp_t *ftepp)
                     ftepp->token = TOKEN_ERROR;
                 break;
             case '#':
-                if (!ftepp->newline) {
+                if (!newline) {
                     ftepp_out(ftepp, ftepp_tokval(ftepp), false);
                     ftepp_next(ftepp);
                     break;
@@ -1301,7 +1298,13 @@ static bool ftepp_preprocess(ftepp_t *ftepp)
                 ftepp_out(ftepp, "\n", true);
                 ftepp_next(ftepp);
                 break;
+            case TOKEN_WHITE:
+                /* same as default but don't set newline=false */
+                ftepp_out(ftepp, ftepp_tokval(ftepp), false);
+                ftepp_next(ftepp);
+                break;
             default:
+                newline = false;
                 ftepp_out(ftepp, ftepp_tokval(ftepp), false);
                 ftepp_next(ftepp);
                 break;
@@ -1312,8 +1315,7 @@ static bool ftepp_preprocess(ftepp_t *ftepp)
     vec_push(ftepp->output_string, 0);
     vec_shrinkby(ftepp->output_string, 1);
 
-    newline = ftepp->token == TOKEN_EOF;
-    return newline;
+    return (ftepp->token == TOKEN_EOF);
 }
 
 /* Like in parser.c - files keep the previous state so we have one global

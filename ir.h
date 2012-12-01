@@ -42,12 +42,14 @@ typedef struct ir_value_s {
     int       fieldtype;
     /* and the output type of a function */
     int       outtype;
+    /* 'const' vs 'var' qualifier */
+    int       cvq;
 
     struct ir_instr_s **reads;
     struct ir_instr_s **writes;
 
     /* constantvalues */
-    bool isconst;
+    bool hasvalue;
     union {
         float    vfloat;
         int      vint;
@@ -65,6 +67,8 @@ typedef struct ir_value_s {
         int32_t local;
         /* added for members */
         int32_t addroffset;
+        /* to generate field-addresses early */
+        int32_t fieldaddr;
     } code;
 
     /* for acessing vectors */
@@ -139,7 +143,7 @@ typedef struct ir_instr_s
     struct ir_block_s *owner;
 } ir_instr;
 
-ir_instr* ir_instr_new(struct ir_block_s *owner, int opcode);
+ir_instr* ir_instr_new(lex_ctx ctx, struct ir_block_s *owner, int opcode);
 void      ir_instr_delete(ir_instr*);
 
 bool GMQCC_WARN vec_ir_instr_find(ir_instr **vec, ir_instr *what, size_t *idx);
@@ -176,39 +180,39 @@ void      ir_block_delete(ir_block*);
 
 bool      ir_block_set_label(ir_block*, const char *label);
 
-ir_value* ir_block_create_binop(ir_block*, const char *label, int op,
+ir_value* ir_block_create_binop(ir_block*, lex_ctx, const char *label, int op,
                                 ir_value *left, ir_value *right);
-ir_value* ir_block_create_unary(ir_block*, const char *label, int op,
+ir_value* ir_block_create_unary(ir_block*, lex_ctx, const char *label, int op,
                                 ir_value *operand);
-bool GMQCC_WARN ir_block_create_store_op(ir_block*, int op, ir_value *target, ir_value *what);
-bool GMQCC_WARN ir_block_create_store(ir_block*, ir_value *target, ir_value *what);
-bool GMQCC_WARN ir_block_create_storep(ir_block*, ir_value *target, ir_value *what);
+bool GMQCC_WARN ir_block_create_store_op(ir_block*, lex_ctx, int op, ir_value *target, ir_value *what);
+bool GMQCC_WARN ir_block_create_store(ir_block*, lex_ctx, ir_value *target, ir_value *what);
+bool GMQCC_WARN ir_block_create_storep(ir_block*, lex_ctx, ir_value *target, ir_value *what);
 
 /* field must be of TYPE_FIELD */
-ir_value* ir_block_create_load_from_ent(ir_block*, const char *label, ir_value *ent, ir_value *field, int outype);
+ir_value* ir_block_create_load_from_ent(ir_block*, lex_ctx, const char *label, ir_value *ent, ir_value *field, int outype);
 
-ir_value* ir_block_create_fieldaddress(ir_block*, const char *label, ir_value *entity, ir_value *field);
+ir_value* ir_block_create_fieldaddress(ir_block*, lex_ctx, const char *label, ir_value *entity, ir_value *field);
 
 /* This is to create an instruction of the form
  * <outtype>%label := opcode a, b
  */
-ir_value* ir_block_create_general_instr(ir_block *self, const char *label,
+ir_value* ir_block_create_general_instr(ir_block *self, lex_ctx, const char *label,
                                         int op, ir_value *a, ir_value *b, int outype);
 
-ir_value* ir_block_create_add(ir_block*, const char *label, ir_value *l, ir_value *r);
-ir_value* ir_block_create_sub(ir_block*, const char *label, ir_value *l, ir_value *r);
-ir_value* ir_block_create_mul(ir_block*, const char *label, ir_value *l, ir_value *r);
-ir_value* ir_block_create_div(ir_block*, const char *label, ir_value *l, ir_value *r);
-ir_instr* ir_block_create_phi(ir_block*, const char *label, int vtype);
+ir_value* ir_block_create_add(ir_block*, lex_ctx, const char *label, ir_value *l, ir_value *r);
+ir_value* ir_block_create_sub(ir_block*, lex_ctx, const char *label, ir_value *l, ir_value *r);
+ir_value* ir_block_create_mul(ir_block*, lex_ctx, const char *label, ir_value *l, ir_value *r);
+ir_value* ir_block_create_div(ir_block*, lex_ctx, const char *label, ir_value *l, ir_value *r);
+ir_instr* ir_block_create_phi(ir_block*, lex_ctx, const char *label, int vtype);
 ir_value* ir_phi_value(ir_instr*);
 void ir_phi_add(ir_instr*, ir_block *b, ir_value *v);
-ir_instr* ir_block_create_call(ir_block*, const char *label, ir_value *func);
+ir_instr* ir_block_create_call(ir_block*, lex_ctx, const char *label, ir_value *func);
 ir_value* ir_call_value(ir_instr*);
 void ir_call_param(ir_instr*, ir_value*);
 
-bool GMQCC_WARN ir_block_create_return(ir_block*, ir_value *opt_value);
+bool GMQCC_WARN ir_block_create_return(ir_block*, lex_ctx, ir_value *opt_value);
 
-bool GMQCC_WARN ir_block_create_if(ir_block*, ir_value *cond,
+bool GMQCC_WARN ir_block_create_if(ir_block*, lex_ctx, ir_value *cond,
                                    ir_block *ontrue, ir_block *onfalse);
 /* A 'goto' is an actual 'goto' coded in QC, whereas
  * a 'jump' is a virtual construct which simply names the
@@ -216,8 +220,8 @@ bool GMQCC_WARN ir_block_create_if(ir_block*, ir_value *cond,
  * A goto usually becomes an OP_GOTO in the resulting code,
  * whereas a 'jump' usually doesn't add any actual instruction.
  */
-bool GMQCC_WARN ir_block_create_jump(ir_block*, ir_block *to);
-bool GMQCC_WARN ir_block_create_goto(ir_block*, ir_block *to);
+bool GMQCC_WARN ir_block_create_jump(ir_block*, lex_ctx, ir_block *to);
+bool GMQCC_WARN ir_block_create_goto(ir_block*, lex_ctx, ir_block *to);
 
 void ir_block_dump(ir_block*, char *ind, int (*oprintf)(const char*,...));
 

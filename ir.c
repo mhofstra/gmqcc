@@ -361,7 +361,7 @@ ir_function* ir_builder_create_function(ir_builder *self, const char *name, int 
         return NULL;
     }
 
-    fn->value->isconst = true;
+    fn->value->hasvalue = true;
     fn->value->outtype = outtype;
     fn->value->constval.vfunc = fn;
     fn->value->context = fn->context;
@@ -524,10 +524,104 @@ ir_block* ir_function_create_block(lex_ctx ctx, ir_function *self, const char *l
     return bn;
 }
 
+bool ir_function_pass_tailcall(ir_function *self)
+{
+    size_t b, p;
+
+    for (b = 0; b < vec_size(self->blocks); ++b) {
+        ir_value *funcval;
+        ir_instr *ret, *call, *store = NULL;
+        ir_block *block = self->blocks[b];
+
+        if (!block->final || vec_size(block->instr) < 2)
+            continue;
+
+        ret = block->instr[vec_size(block->instr)-1];
+        if (ret->opcode != INSTR_DONE && ret->opcode != INSTR_RETURN)
+            continue;
+
+        call = block->instr[vec_size(block->instr)-2];
+        if (call->opcode >= INSTR_STORE_F && call->opcode <= INSTR_STORE_FNC) {
+            /* account for the unoptimized
+             * CALL
+             * STORE %return, %tmp
+             * RETURN %tmp
+             * version
+             */
+            if (vec_size(block->instr) < 3)
+                continue;
+
+            store = call;
+            call = block->instr[vec_size(block->instr)-3];
+        }
+
+        if (call->opcode < INSTR_CALL0 || call->opcode > INSTR_CALL8)
+            continue;
+
+        if (store) {
+            /* optimize out the STORE */
+            if (ret->_ops[0]   &&
+                ret->_ops[0]   == store->_ops[0] &&
+                store->_ops[1] == call->_ops[0])
+            {
+                ++optimization_count[OPTIM_MINOR];
+                call->_ops[0] = store->_ops[0];
+                vec_remove(block->instr, vec_size(block->instr) - 2, 1);
+                ir_instr_delete(store);
+            }
+            else
+                continue;
+        }
+
+        if (!call->_ops[0])
+            continue;
+
+        funcval = call->_ops[1];
+        if (!funcval)
+            continue;
+        if (funcval->vtype != TYPE_FUNCTION || funcval->constval.vfunc != self)
+            continue;
+
+        /* now we have a CALL and a RET, check if it's a tailcall */
+        if (ret->_ops[0] && call->_ops[0] != ret->_ops[0])
+            continue;
+
+        ++optimization_count[OPTIM_TAIL_RECURSION];
+        vec_shrinkby(block->instr, 2);
+
+        block->final = false; /* open it back up */
+
+        /* emite parameter-stores */
+        for (p = 0; p < vec_size(call->params); ++p) {
+            /* assert(call->params_count <= self->locals_count); */
+            if (!ir_block_create_store(block, call->context, self->locals[p], call->params[p])) {
+                irerror(call->context, "failed to create tailcall store instruction for parameter %i", (int)p);
+                return false;
+            }
+        }
+        if (!ir_block_create_jump(block, call->context, self->blocks[0])) {
+            irerror(call->context, "failed to create tailcall jump");
+            return false;
+        }
+
+        ir_instr_delete(call);
+        ir_instr_delete(ret);
+    }
+
+    return true;
+}
+
 bool ir_function_finalize(ir_function *self)
 {
     if (self->builtin)
         return true;
+
+    if (OPTS_OPTIMIZATION(OPTIM_TAIL_RECURSION)) {
+        if (!ir_function_pass_tailcall(self)) {
+            irerror(self->context, "tailcall optimization pass broke something in `%s`", self->name);
+            return false;
+        }
+    }
 
     if (!ir_function_naive_phi(self))
         return false;
@@ -633,7 +727,7 @@ bool ir_block_set_label(ir_block *self, const char *name)
  *IR Instructions
  */
 
-ir_instr* ir_instr_new(ir_block* owner, int op)
+ir_instr* ir_instr_new(lex_ctx ctx, ir_block* owner, int op)
 {
     ir_instr *self;
     self = (ir_instr*)mem_a(sizeof(*self));
@@ -641,8 +735,7 @@ ir_instr* ir_instr_new(ir_block* owner, int op)
         return NULL;
 
     self->owner = owner;
-    self->context.file = "<@no context>";
-    self->context.line = 0;
+    self->context = ctx;
     self->opcode = op;
     self->_ops[0] = NULL;
     self->_ops[1] = NULL;
@@ -747,7 +840,8 @@ ir_value* ir_value_var(const char *name, int storetype, int vtype)
     self->reads  = NULL;
     self->writes = NULL;
 
-    self->isconst = false;
+    self->cvq          = CV_NONE;
+    self->hasvalue     = false;
     self->context.file = "<@no context>";
     self->context.line = 0;
     self->name = NULL;
@@ -825,7 +919,7 @@ void ir_value_delete(ir_value* self)
     size_t i;
     if (self->name)
         mem_d((void*)self->name);
-    if (self->isconst)
+    if (self->hasvalue)
     {
         if (self->vtype == TYPE_STRING)
             mem_d((void*)self->constval.vstring);
@@ -853,7 +947,7 @@ bool ir_value_set_float(ir_value *self, float f)
     if (self->vtype != TYPE_FLOAT)
         return false;
     self->constval.vfloat = f;
-    self->isconst = true;
+    self->hasvalue = true;
     return true;
 }
 
@@ -862,7 +956,7 @@ bool ir_value_set_func(ir_value *self, int f)
     if (self->vtype != TYPE_FUNCTION)
         return false;
     self->constval.vint = f;
-    self->isconst = true;
+    self->hasvalue = true;
     return true;
 }
 
@@ -871,7 +965,7 @@ bool ir_value_set_vector(ir_value *self, vector v)
     if (self->vtype != TYPE_VECTOR)
         return false;
     self->constval.vvec = v;
-    self->isconst = true;
+    self->hasvalue = true;
     return true;
 }
 
@@ -880,7 +974,7 @@ bool ir_value_set_field(ir_value *self, ir_value *fld)
     if (self->vtype != TYPE_FIELD)
         return false;
     self->constval.vpointer = fld;
-    self->isconst = true;
+    self->hasvalue = true;
     return true;
 }
 
@@ -900,7 +994,7 @@ bool ir_value_set_string(ir_value *self, const char *str)
     if (self->vtype != TYPE_STRING)
         return false;
     self->constval.vstring = ir_strdup(str);
-    self->isconst = true;
+    self->hasvalue = true;
     return true;
 }
 
@@ -910,7 +1004,7 @@ bool ir_value_set_int(ir_value *self, int i)
     if (self->vtype != TYPE_INTEGER)
         return false;
     self->constval.vint = i;
-    self->isconst = true;
+    self->hasvalue = true;
     return true;
 }
 #endif
@@ -1133,14 +1227,14 @@ bool ir_values_overlap(const ir_value *a, const ir_value *b)
  *IR main operations
  */
 
-bool ir_block_create_store_op(ir_block *self, int op, ir_value *target, ir_value *what)
+bool ir_block_create_store_op(ir_block *self, lex_ctx ctx, int op, ir_value *target, ir_value *what)
 {
     ir_instr *in;
     if (self->final) {
         irerror(self->context, "unreachable statement (%s)", self->label);
         return false;
     }
-    in = ir_instr_new(self, op);
+    in = ir_instr_new(ctx, self, op);
     if (!in)
         return false;
 
@@ -1162,7 +1256,7 @@ bool ir_block_create_store_op(ir_block *self, int op, ir_value *target, ir_value
     return true;
 }
 
-bool ir_block_create_store(ir_block *self, ir_value *target, ir_value *what)
+bool ir_block_create_store(ir_block *self, lex_ctx ctx, ir_value *target, ir_value *what)
 {
     int op = 0;
     int vtype;
@@ -1184,10 +1278,10 @@ bool ir_block_create_store(ir_block *self, ir_value *target, ir_value *what)
             op = INSTR_STORE_V;
     }
 
-    return ir_block_create_store_op(self, op, target, what);
+    return ir_block_create_store_op(self, ctx, op, target, what);
 }
 
-bool ir_block_create_storep(ir_block *self, ir_value *target, ir_value *what)
+bool ir_block_create_storep(ir_block *self, lex_ctx ctx, ir_value *target, ir_value *what)
 {
     int op = 0;
     int vtype;
@@ -1206,10 +1300,10 @@ bool ir_block_create_storep(ir_block *self, ir_value *target, ir_value *what)
             op = INSTR_STOREP_V;
     }
 
-    return ir_block_create_store_op(self, op, target, what);
+    return ir_block_create_store_op(self, ctx, op, target, what);
 }
 
-bool ir_block_create_return(ir_block *self, ir_value *v)
+bool ir_block_create_return(ir_block *self, lex_ctx ctx, ir_value *v)
 {
     ir_instr *in;
     if (self->final) {
@@ -1218,7 +1312,7 @@ bool ir_block_create_return(ir_block *self, ir_value *v)
     }
     self->final = true;
     self->is_return = true;
-    in = ir_instr_new(self, INSTR_RETURN);
+    in = ir_instr_new(ctx, self, INSTR_RETURN);
     if (!in)
         return false;
 
@@ -1229,7 +1323,7 @@ bool ir_block_create_return(ir_block *self, ir_value *v)
     return true;
 }
 
-bool ir_block_create_if(ir_block *self, ir_value *v,
+bool ir_block_create_if(ir_block *self, lex_ctx ctx, ir_value *v,
                         ir_block *ontrue, ir_block *onfalse)
 {
     ir_instr *in;
@@ -1238,8 +1332,8 @@ bool ir_block_create_if(ir_block *self, ir_value *v,
         return false;
     }
     self->final = true;
-    /*in = ir_instr_new(self, (v->vtype == TYPE_STRING ? INSTR_IF_S : INSTR_IF_F));*/
-    in = ir_instr_new(self, VINSTR_COND);
+    /*in = ir_instr_new(ctx, self, (v->vtype == TYPE_STRING ? INSTR_IF_S : INSTR_IF_F));*/
+    in = ir_instr_new(ctx, self, VINSTR_COND);
     if (!in)
         return false;
 
@@ -1260,7 +1354,7 @@ bool ir_block_create_if(ir_block *self, ir_value *v,
     return true;
 }
 
-bool ir_block_create_jump(ir_block *self, ir_block *to)
+bool ir_block_create_jump(ir_block *self, lex_ctx ctx, ir_block *to)
 {
     ir_instr *in;
     if (self->final) {
@@ -1268,7 +1362,7 @@ bool ir_block_create_jump(ir_block *self, ir_block *to)
         return false;
     }
     self->final = true;
-    in = ir_instr_new(self, VINSTR_JUMP);
+    in = ir_instr_new(ctx, self, VINSTR_JUMP);
     if (!in)
         return false;
 
@@ -1280,7 +1374,7 @@ bool ir_block_create_jump(ir_block *self, ir_block *to)
     return true;
 }
 
-bool ir_block_create_goto(ir_block *self, ir_block *to)
+bool ir_block_create_goto(ir_block *self, lex_ctx ctx, ir_block *to)
 {
     ir_instr *in;
     if (self->final) {
@@ -1288,7 +1382,7 @@ bool ir_block_create_goto(ir_block *self, ir_block *to)
         return false;
     }
     self->final = true;
-    in = ir_instr_new(self, INSTR_GOTO);
+    in = ir_instr_new(ctx, self, INSTR_GOTO);
     if (!in)
         return false;
 
@@ -1300,11 +1394,11 @@ bool ir_block_create_goto(ir_block *self, ir_block *to)
     return true;
 }
 
-ir_instr* ir_block_create_phi(ir_block *self, const char *label, int ot)
+ir_instr* ir_block_create_phi(ir_block *self, lex_ctx ctx, const char *label, int ot)
 {
     ir_value *out;
     ir_instr *in;
-    in = ir_instr_new(self, VINSTR_PHI);
+    in = ir_instr_new(ctx, self, VINSTR_PHI);
     if (!in)
         return NULL;
     out = ir_value_out(self->owner, label, store_value, ot);
@@ -1345,11 +1439,11 @@ void ir_phi_add(ir_instr* self, ir_block *b, ir_value *v)
 }
 
 /* call related code */
-ir_instr* ir_block_create_call(ir_block *self, const char *label, ir_value *func)
+ir_instr* ir_block_create_call(ir_block *self, lex_ctx ctx, const char *label, ir_value *func)
 {
     ir_value *out;
     ir_instr *in;
-    in = ir_instr_new(self, INSTR_CALL0);
+    in = ir_instr_new(ctx, self, INSTR_CALL0);
     if (!in)
         return NULL;
     out = ir_value_out(self->owner, label, (func->outtype == TYPE_VOID) ? store_return : store_value, func->outtype);
@@ -1381,7 +1475,7 @@ void ir_call_param(ir_instr* self, ir_value *v)
 
 /* binary op related code */
 
-ir_value* ir_block_create_binop(ir_block *self,
+ir_value* ir_block_create_binop(ir_block *self, lex_ctx ctx,
                                 const char *label, int opcode,
                                 ir_value *left, ir_value *right)
 {
@@ -1470,10 +1564,10 @@ ir_value* ir_block_create_binop(ir_block *self,
         return NULL;
     }
 
-    return ir_block_create_general_instr(self, label, opcode, left, right, ot);
+    return ir_block_create_general_instr(self, ctx, label, opcode, left, right, ot);
 }
 
-ir_value* ir_block_create_unary(ir_block *self,
+ir_value* ir_block_create_unary(ir_block *self, lex_ctx ctx,
                                 const char *label, int opcode,
                                 ir_value *operand)
 {
@@ -1503,10 +1597,10 @@ ir_value* ir_block_create_unary(ir_block *self,
     }
 
     /* let's use the general instruction creator and pass NULL for OPB */
-    return ir_block_create_general_instr(self, label, opcode, operand, NULL, ot);
+    return ir_block_create_general_instr(self, ctx, label, opcode, operand, NULL, ot);
 }
 
-ir_value* ir_block_create_general_instr(ir_block *self, const char *label,
+ir_value* ir_block_create_general_instr(ir_block *self, lex_ctx ctx, const char *label,
                                         int op, ir_value *a, ir_value *b, int outype)
 {
     ir_instr *instr;
@@ -1516,7 +1610,7 @@ ir_value* ir_block_create_general_instr(ir_block *self, const char *label,
     if (!out)
         return NULL;
 
-    instr = ir_instr_new(self, op);
+    instr = ir_instr_new(ctx, self, op);
     if (!instr) {
         ir_value_delete(out);
         return NULL;
@@ -1538,7 +1632,7 @@ on_error:
     return NULL;
 }
 
-ir_value* ir_block_create_fieldaddress(ir_block *self, const char *label, ir_value *ent, ir_value *field)
+ir_value* ir_block_create_fieldaddress(ir_block *self, lex_ctx ctx, const char *label, ir_value *ent, ir_value *field)
 {
     ir_value *v;
 
@@ -1549,12 +1643,12 @@ ir_value* ir_block_create_fieldaddress(ir_block *self, const char *label, ir_val
     if (field->vtype != TYPE_FIELD)
         return NULL;
 
-    v = ir_block_create_general_instr(self, label, INSTR_ADDRESS, ent, field, TYPE_POINTER);
+    v = ir_block_create_general_instr(self, ctx, label, INSTR_ADDRESS, ent, field, TYPE_POINTER);
     v->fieldtype = field->fieldtype;
     return v;
 }
 
-ir_value* ir_block_create_load_from_ent(ir_block *self, const char *label, ir_value *ent, ir_value *field, int outype)
+ir_value* ir_block_create_load_from_ent(ir_block *self, lex_ctx ctx, const char *label, ir_value *ent, ir_value *field, int outype)
 {
     int op;
     if (ent->vtype != TYPE_ENTITY)
@@ -1581,10 +1675,10 @@ ir_value* ir_block_create_load_from_ent(ir_block *self, const char *label, ir_va
             return NULL;
     }
 
-    return ir_block_create_general_instr(self, label, op, ent, field, outype);
+    return ir_block_create_general_instr(self, ctx, label, op, ent, field, outype);
 }
 
-ir_value* ir_block_create_add(ir_block *self,
+ir_value* ir_block_create_add(ir_block *self, lex_ctx ctx,
                               const char *label,
                               ir_value *left, ir_value *right)
 {
@@ -1621,10 +1715,10 @@ ir_value* ir_block_create_add(ir_block *self,
             return NULL;
         }
     }
-    return ir_block_create_binop(self, label, op, left, right);
+    return ir_block_create_binop(self, ctx, label, op, left, right);
 }
 
-ir_value* ir_block_create_sub(ir_block *self,
+ir_value* ir_block_create_sub(ir_block *self, lex_ctx ctx,
                               const char *label,
                               ir_value *left, ir_value *right)
 {
@@ -1662,10 +1756,10 @@ ir_value* ir_block_create_sub(ir_block *self,
             return NULL;
         }
     }
-    return ir_block_create_binop(self, label, op, left, right);
+    return ir_block_create_binop(self, ctx, label, op, left, right);
 }
 
-ir_value* ir_block_create_mul(ir_block *self,
+ir_value* ir_block_create_mul(ir_block *self, lex_ctx ctx,
                               const char *label,
                               ir_value *left, ir_value *right)
 {
@@ -1710,10 +1804,10 @@ ir_value* ir_block_create_mul(ir_block *self,
             return NULL;
         }
     }
-    return ir_block_create_binop(self, label, op, left, right);
+    return ir_block_create_binop(self, ctx, label, op, left, right);
 }
 
-ir_value* ir_block_create_div(ir_block *self,
+ir_value* ir_block_create_div(ir_block *self, lex_ctx ctx,
                               const char *label,
                               ir_value *left, ir_value *right)
 {
@@ -1750,7 +1844,7 @@ ir_value* ir_block_create_div(ir_block *self,
             return NULL;
         }
     }
-    return ir_block_create_binop(self, label, op, left, right);
+    return ir_block_create_binop(self, ctx, label, op, left, right);
 }
 
 /* PHI resolving breaks the SSA, and must thus be the last
@@ -1826,7 +1920,7 @@ static bool ir_block_naive_phi(ir_block *self)
                 vec_pop(b->instr);
                 b->final = false;
                 instr->_ops[0]->store = store_global;
-                if (!ir_block_create_store(b, instr->_ops[0], v))
+                if (!ir_block_create_store(b, instr->context, instr->_ops[0], v))
                     return false;
                 instr->_ops[0]->store = store_value;
                 vec_push(b->instr, prevjump);
@@ -2346,7 +2440,7 @@ static bool ir_builder_gen_global(ir_builder *self, ir_value *global, bool isloc
 
 static bool gen_global_field(ir_value *global)
 {
-    if (global->isconst)
+    if (global->hasvalue)
     {
         ir_value *fld = global->constval.vpointer;
         if (!fld) {
@@ -2354,25 +2448,12 @@ static bool gen_global_field(ir_value *global)
             return false;
         }
 
-        /* Now, in this case, a relocation would be impossible to code
-         * since it looks like this:
-         * .vector v = origin;     <- parse error, wtf is 'origin'?
-         * .vector origin;
-         *
-         * But we will need a general relocation support later anyway
-         * for functions... might as well support that here.
-         */
-        if (!fld->code.globaladdr) {
-            irerror(global->context, "FIXME: Relocation support");
-            return false;
-        }
-
         /* copy the field's value */
         ir_value_code_setaddr(global, vec_size(code_globals));
-        vec_push(code_globals, code_globals[fld->code.globaladdr]);
+        vec_push(code_globals, fld->code.fieldaddr);
         if (global->fieldtype == TYPE_VECTOR) {
-            vec_push(code_globals, code_globals[fld->code.globaladdr]+1);
-            vec_push(code_globals, code_globals[fld->code.globaladdr]+2);
+            vec_push(code_globals, fld->code.fieldaddr+1);
+            vec_push(code_globals, fld->code.fieldaddr+2);
         }
     }
     else
@@ -2391,7 +2472,7 @@ static bool gen_global_field(ir_value *global)
 
 static bool gen_global_pointer(ir_value *global)
 {
-    if (global->isconst)
+    if (global->hasvalue)
     {
         ir_value *target = global->constval.vpointer;
         if (!target) {
@@ -2465,7 +2546,7 @@ tailcall:
             stmt.o1.s1 = (target->code_start) - vec_size(code_statements);
             stmt.o2.s1 = 0;
             stmt.o3.s1 = 0;
-            vec_push(code_statements, stmt);
+            code_push_statement(&stmt, instr->context.line);
 
             /* no further instructions can be in this block */
             return true;
@@ -2485,12 +2566,12 @@ tailcall:
             if (ontrue->generated) {
                 stmt.opcode = INSTR_IF;
                 stmt.o2.s1 = (ontrue->code_start) - vec_size(code_statements);
-                vec_push(code_statements, stmt);
+                code_push_statement(&stmt, instr->context.line);
             }
             if (onfalse->generated) {
                 stmt.opcode = INSTR_IFNOT;
                 stmt.o2.s1 = (onfalse->code_start) - vec_size(code_statements);
-                vec_push(code_statements, stmt);
+                code_push_statement(&stmt, instr->context.line);
             }
             if (!ontrue->generated) {
                 if (onfalse->generated) {
@@ -2514,7 +2595,7 @@ tailcall:
                 ontrue = tmp;
             }
             stidx = vec_size(code_statements);
-            vec_push(code_statements, stmt);
+            code_push_statement(&stmt, instr->context.line);
             /* on false we jump, so add ontrue-path */
             if (!gen_blocks_recursive(func, ontrue))
                 return false;
@@ -2539,7 +2620,7 @@ tailcall:
                 stmt.o1.s1 = (onfalse->code_start) - vec_size(code_statements);
                 stmt.o2.s1 = 0;
                 stmt.o3.s1 = 0;
-                vec_push(code_statements, stmt);
+                code_push_statement(&stmt, instr->context.line);
                 return true;
             }
             /* if not, generate now */
@@ -2580,7 +2661,7 @@ tailcall:
                     stmt.opcode = type_store_instr[param->vtype];
                 stmt.o1.u1 = ir_value_code_addr(param);
                 stmt.o2.u1 = OFS_PARM0 + 3 * p;
-                vec_push(code_statements, stmt);
+                code_push_statement(&stmt, instr->context.line);
             }
             /* Now handle extparams */
             first = vec_size(instr->params);
@@ -2606,7 +2687,7 @@ tailcall:
                     stmt.opcode = type_store_instr[param->vtype];
                 stmt.o1.u1 = ir_value_code_addr(param);
                 stmt.o2.u1 = ir_value_code_addr(targetparam);
-                vec_push(code_statements, stmt);
+                code_push_statement(&stmt, instr->context.line);
             }
 
             stmt.opcode = INSTR_CALL0 + vec_size(instr->params);
@@ -2615,7 +2696,7 @@ tailcall:
             stmt.o1.u1 = ir_value_code_addr(instr->_ops[1]);
             stmt.o2.u1 = 0;
             stmt.o3.u1 = 0;
-            vec_push(code_statements, stmt);
+            code_push_statement(&stmt, instr->context.line);
 
             retvalue = instr->_ops[0];
             if (retvalue && retvalue->store != store_return && vec_size(retvalue->life))
@@ -2628,7 +2709,7 @@ tailcall:
                 stmt.o1.u1 = OFS_RETURN;
                 stmt.o2.u1 = ir_value_code_addr(retvalue);
                 stmt.o3.u1 = 0;
-                vec_push(code_statements, stmt);
+                code_push_statement(&stmt, instr->context.line);
             }
             continue;
         }
@@ -2668,7 +2749,7 @@ tailcall:
             stmt.o3.u1 = 0;
         }
 
-        vec_push(code_statements, stmt);
+        code_push_statement(&stmt, instr->context.line);
     }
     return true;
 }
@@ -2700,7 +2781,7 @@ static bool gen_function_code(ir_function *self)
     stmt.o1.u1 = 0;
     stmt.o2.u1 = 0;
     stmt.o3.u1 = 0;
-    vec_push(code_statements, stmt);
+    code_push_statement(&stmt, vec_last(code_linenums));
     return true;
 }
 
@@ -2731,7 +2812,7 @@ static bool gen_global_function(ir_builder *ir, ir_value *global)
     size_t i;
     size_t local_var_end;
 
-    if (!global->isconst || (!global->constval.vfunc))
+    if (!global->hasvalue || (!global->constval.vfunc))
     {
         irerror(global->context, "Invalid state of function-global: not constant: %s", global->name);
         return false;
@@ -2747,7 +2828,7 @@ static bool gen_global_function(ir_builder *ir, ir_value *global)
         fun.nargs = 8;
 
     for (i = 0;i < 8; ++i) {
-        if (i >= fun.nargs)
+        if ((int32_t)i >= fun.nargs)
             fun.argsize[i] = 0;
         else
             fun.argsize[i] = type_sizeof[irfun->params[i]];
@@ -2781,7 +2862,7 @@ static bool gen_global_function(ir_builder *ir, ir_value *global)
     fun.locals = vec_size(code_globals) - fun.firstlocal;
 
     if (irfun->builtin)
-        fun.entry = irfun->builtin;
+        fun.entry = irfun->builtin+1;
     else {
         irfun->code_function_def = vec_size(code_functions);
         fun.entry = vec_size(code_statements);
@@ -2842,7 +2923,7 @@ static bool gen_function_extparam_copy(ir_function *self)
         }
         stmt.o1.u1 = ir_value_code_addr(ep);
         stmt.o2.u1 = ir_value_code_addr(self->locals[i]);
-        vec_push(code_statements, stmt);
+        code_push_statement(&stmt, self->context.line);
     }
 
     return true;
@@ -2857,8 +2938,10 @@ static bool gen_global_function_code(ir_builder *ir, ir_value *global)
 
     irfun = global->constval.vfunc;
     if (!irfun) {
-        irwarning(global->context, WARN_IMPLICIT_FUNCTION_POINTER,
-                  "function `%s` has no body and in QC implicitly becomes a function-pointer", global->name);
+        if (global->cvq == CV_NONE) {
+            irwarning(global->context, WARN_IMPLICIT_FUNCTION_POINTER,
+                      "function `%s` has no body and in QC implicitly becomes a function-pointer", global->name);
+        }
         /* this was a function pointer, don't generate code for those */
         return true;
     }
@@ -2941,7 +3024,7 @@ static bool ir_builder_gen_global(ir_builder *self, ir_value *global, bool isloc
     case TYPE_FLOAT:
     {
         ir_value_code_setaddr(global, vec_size(code_globals));
-        if (global->isconst) {
+        if (global->hasvalue) {
             iptr = (int32_t*)&global->constval.ivec[0];
             vec_push(code_globals, *iptr);
         } else {
@@ -2956,7 +3039,7 @@ static bool ir_builder_gen_global(ir_builder *self, ir_value *global, bool isloc
     case TYPE_STRING:
     {
         ir_value_code_setaddr(global, vec_size(code_globals));
-        if (global->isconst) {
+        if (global->hasvalue) {
             vec_push(code_globals, code_genstring(global->constval.vstring));
         } else {
             vec_push(code_globals, 0);
@@ -2970,7 +3053,7 @@ static bool ir_builder_gen_global(ir_builder *self, ir_value *global, bool isloc
     {
         size_t d;
         ir_value_code_setaddr(global, vec_size(code_globals));
-        if (global->isconst) {
+        if (global->hasvalue) {
             iptr = (int32_t*)&global->constval.ivec[0];
             vec_push(code_globals, iptr[0]);
             if (global->code.globaladdr < 0)
@@ -2996,7 +3079,7 @@ static bool ir_builder_gen_global(ir_builder *self, ir_value *global, bool isloc
     }
     case TYPE_FUNCTION:
         ir_value_code_setaddr(global, vec_size(code_globals));
-        if (!global->isconst) {
+        if (!global->hasvalue) {
             vec_push(code_globals, 0);
             if (global->code.globaladdr < 0)
                 return false;
@@ -3022,6 +3105,11 @@ static bool ir_builder_gen_global(ir_builder *self, ir_value *global, bool isloc
                 global->name, type_name[global->vtype]);
         return false;
     }
+}
+
+static void ir_builder_prepare_field(ir_value *field)
+{
+    field->code.fieldaddr = code_alloc_field(type_sizeof[field->fieldtype]);
 }
 
 static bool ir_builder_gen_field(ir_builder *self, ir_value *field)
@@ -3075,7 +3163,7 @@ static bool ir_builder_gen_field(ir_builder *self, ir_value *field)
         return false;
     }
 
-    fld.offset = code_alloc_field(type_sizeof[field->fieldtype]);
+    fld.offset = field->code.fieldaddr;
 
     vec_push(code_fields, fld);
 
@@ -3093,8 +3181,14 @@ bool ir_builder_generate(ir_builder *self, const char *filename)
 {
     prog_section_statement stmt;
     size_t i;
+    char   *lnofile = NULL;
 
     code_init();
+
+    for (i = 0; i < vec_size(self->fields); ++i)
+    {
+        ir_builder_prepare_field(self->fields[i]);
+    }
 
     for (i = 0; i < vec_size(self->globals); ++i)
     {
@@ -3133,11 +3227,39 @@ bool ir_builder_generate(ir_builder *self, const char *filename)
     stmt.o1.u1 = 0;
     stmt.o2.u1 = 0;
     stmt.o3.u1 = 0;
-    vec_push(code_statements, stmt);
+    code_push_statement(&stmt, vec_last(code_linenums));
 
-    if (!opts_pp_only)
-        con_out("writing '%s'...\n", filename);
-    return code_write(filename);
+    if (opts_pp_only)
+        return true;
+
+    if (vec_size(code_statements) != vec_size(code_linenums)) {
+        con_err("Linecounter wrong: %lu != %lu\n",
+                (unsigned long)vec_size(code_statements),
+                (unsigned long)vec_size(code_linenums));
+    } else if (OPTS_FLAG(LNO)) {
+        char *dot;
+        size_t filelen = strlen(filename);
+
+        memcpy(vec_add(lnofile, filelen+1), filename, filelen+1);
+        dot = strrchr(lnofile, '.');
+        if (!dot) {
+            vec_pop(lnofile);
+        } else {
+            vec_shrinkto(lnofile, dot - lnofile);
+        }
+        memcpy(vec_add(lnofile, 5), ".lno", 5);
+    }
+
+    if (lnofile)
+        con_out("writing '%s' and '%s'...\n", filename, lnofile);
+    else
+        con_out("writing '%s'\n", filename);
+    if (!code_write(filename, lnofile)) {
+        vec_free(lnofile);
+        return false;
+    }
+    vec_free(lnofile);
+    return true;
 }
 
 /***********************************************************************
@@ -3174,7 +3296,7 @@ void ir_builder_dump(ir_builder *b, int (*oprintf)(const char*, ...))
     for (i = 0; i < vec_size(b->globals); ++i)
     {
         oprintf("global ");
-        if (b->globals[i]->isconst)
+        if (b->globals[i]->hasvalue)
             oprintf("%s = ", b->globals[i]->name);
         ir_value_dump(b->globals[i], oprintf);
         oprintf("\n");
@@ -3341,7 +3463,7 @@ void ir_value_dump_string(const char *str, int (*oprintf)(const char*, ...))
 
 void ir_value_dump(ir_value* v, int (*oprintf)(const char*, ...))
 {
-    if (v->isconst) {
+    if (v->hasvalue) {
         switch (v->vtype) {
             default:
             case TYPE_VOID:

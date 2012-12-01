@@ -75,6 +75,7 @@ typedef struct {
     size_t          *_blocklocals;
     ast_value      **_typedefs;
     size_t          *_blocktypedefs;
+    lex_ctx         *_block_ctx;
 
     size_t errors;
 
@@ -88,18 +89,14 @@ typedef struct {
     qcint  memberof;
 } parser_t;
 
-#define CV_NONE 0
-#define CV_CONST 1
-#define CV_VAR -1
-
 static void parser_enterblock(parser_t *parser);
 static bool parser_leaveblock(parser_t *parser);
 static void parser_addlocal(parser_t *parser, const char *name, ast_expression *e);
 static bool parse_typedef(parser_t *parser);
-static bool parse_variable(parser_t *parser, ast_block *localblock, bool nofields, int is_const_var, ast_value *cached_typedef);
-static ast_block* parse_block(parser_t *parser, bool warnreturn);
-static bool parse_block_into(parser_t *parser, ast_block *block, bool warnreturn);
-static ast_expression* parse_statement_or_block(parser_t *parser);
+static bool parse_variable(parser_t *parser, ast_block *localblock, bool nofields, int qualifier, ast_value *cached_typedef);
+static ast_block* parse_block(parser_t *parser);
+static bool parse_block_into(parser_t *parser, ast_block *block);
+static bool parse_statement_or_block(parser_t *parser, ast_expression **out);
 static bool parse_statement(parser_t *parser, ast_block *block, ast_expression **out, bool allow_cases);
 static ast_expression* parse_expression_leave(parser_t *parser, bool stopatcomma);
 static ast_expression* parse_expression(parser_t *parser, bool stopatcomma);
@@ -221,7 +218,7 @@ static ast_value* parser_const_float(parser_t *parser, double d)
             return parser->imm_float[i];
     }
     out = ast_value_new(parser_ctx(parser), "#IMMEDIATE", TYPE_FLOAT);
-    out->constant = true;
+    out->cvq      = CV_CONST;
     out->hasvalue = true;
     out->constval.vfloat = d;
     vec_push(parser->imm_float, out);
@@ -267,7 +264,7 @@ static ast_value* parser_const_string(parser_t *parser, const char *str, bool do
         out = ast_value_new(parser_ctx(parser), name, TYPE_STRING);
     } else
         out = ast_value_new(parser_ctx(parser), "#IMMEDIATE", TYPE_STRING);
-    out->constant = true;
+    out->cvq      = CV_CONST;
     out->hasvalue = true;
     out->constval.vstring = parser_strdup(str);
     vec_push(parser->imm_string, out);
@@ -283,7 +280,7 @@ static ast_value* parser_const_vector(parser_t *parser, vector v)
             return parser->imm_vector[i];
     }
     out = ast_value_new(parser_ctx(parser), "#IMMEDIATE", TYPE_VECTOR);
-    out->constant = true;
+    out->cvq      = CV_CONST;
     out->hasvalue = true;
     out->constval.vvec = v;
     vec_push(parser->imm_vector, out);
@@ -388,6 +385,7 @@ typedef struct
 #define SY_PAREN_EXPR '('
 #define SY_PAREN_FUNC 'f'
 #define SY_PAREN_INDEX '['
+#define SY_PAREN_TERNARY '?'
 
 static sy_elem syexp(lex_ctx ctx, ast_expression *v) {
     sy_elem e;
@@ -515,6 +513,10 @@ static bool parser_sy_pop(parser_t *parser, shunt *sy)
 
     vec_shrinkby(sy->ops, 1);
 
+    /* op(:?) has no input and no output */
+    if (!op->operands)
+        return true;
+
     vec_shrinkby(sy->out, op->operands);
     for (i = 0; i < op->operands; ++i) {
         exprs[i]  = sy->out[vec_size(sy->out)+i].out;
@@ -531,7 +533,7 @@ static bool parser_sy_pop(parser_t *parser, shunt *sy)
              (exprs[0]->expression.vtype != exprs[1]->expression.vtype || \
               exprs[0]->expression.vtype != T)
 #define CanConstFold1(A) \
-             (ast_istype((A), ast_value) && ((ast_value*)(A))->hasvalue && ((ast_value*)(A))->constant)
+             (ast_istype((A), ast_value) && ((ast_value*)(A))->hasvalue && (((ast_value*)(A))->cvq == CV_CONST))
 #define CanConstFold(A, B) \
              (CanConstFold1(A) && CanConstFold1(B))
 #define ConstV(i) (asvalue[(i)]->constval.vvec)
@@ -578,12 +580,15 @@ static bool parser_sy_pop(parser_t *parser, shunt *sy)
             out = (ast_expression*)ast_array_index_new(ctx, exprs[0], exprs[1]);
             if (rotate_entfield_array_index_nodes(&out))
             {
+#if 0
+                /* This is not broken in fteqcc anymore */
                 if (opts_standard != COMPILER_GMQCC) {
                     /* this error doesn't need to make us bail out */
                     (void)!parsewarning(parser, WARN_EXTENSIONS,
                                         "accessing array-field members of an entity without parenthesis\n"
                                         " -> this is an extension from -std=gmqcc");
                 }
+#endif
             }
             break;
 
@@ -848,7 +853,7 @@ static bool parser_sy_pop(parser_t *parser, shunt *sy)
             if (exprs[1]->expression.vtype != exprs[2]->expression.vtype) {
                 ast_type_to_string(exprs[1], ty1, sizeof(ty1));
                 ast_type_to_string(exprs[2], ty2, sizeof(ty2));
-                parseerror(parser, "iperands of ternary expression must have the same type, got %s and %s", ty1, ty2);
+                parseerror(parser, "operands of ternary expression must have the same type, got %s and %s", ty1, ty2);
                 return false;
             }
             if (CanConstFold1(exprs[0]))
@@ -954,7 +959,7 @@ static bool parser_sy_pop(parser_t *parser, shunt *sy)
                         parseerror(parser, "invalid types in assignment: cannot assign %s to %s", ty2, ty1);
                 }
             }
-            if (ast_istype(exprs[0], ast_value) && asvalue[0]->constant) {
+            if (ast_istype(exprs[0], ast_value) && asvalue[0]->cvq == CV_CONST) {
                 parseerror(parser, "assignment to constant `%s`", asvalue[0]->name);
             }
             out = (ast_expression*)ast_store_new(ctx, assignop, exprs[0], exprs[1]);
@@ -971,7 +976,7 @@ static bool parser_sy_pop(parser_t *parser, shunt *sy)
                 addop = INSTR_ADD_F;
             else
                 addop = INSTR_SUB_F;
-            if (ast_istype(exprs[0], ast_value) && asvalue[0]->constant) {
+            if (ast_istype(exprs[0], ast_value) && asvalue[0]->cvq == CV_CONST) {
                 parseerror(parser, "assignment to constant `%s`", asvalue[0]->name);
             }
             if (ast_istype(exprs[0], ast_entfield)) {
@@ -999,7 +1004,7 @@ static bool parser_sy_pop(parser_t *parser, shunt *sy)
                 addop = INSTR_SUB_F;
                 subop = INSTR_ADD_F;
             }
-            if (ast_istype(exprs[0], ast_value) && asvalue[0]->constant) {
+            if (ast_istype(exprs[0], ast_value) && asvalue[0]->cvq == CV_CONST) {
                 parseerror(parser, "assignment to constant `%s`", asvalue[0]->name);
             }
             if (ast_istype(exprs[0], ast_entfield)) {
@@ -1028,7 +1033,7 @@ static bool parser_sy_pop(parser_t *parser, shunt *sy)
                            ty1, ty2);
                 return false;
             }
-            if (ast_istype(exprs[0], ast_value) && asvalue[0]->constant) {
+            if (ast_istype(exprs[0], ast_value) && asvalue[0]->cvq == CV_CONST) {
                 parseerror(parser, "assignment to constant `%s`", asvalue[0]->name);
             }
             if (ast_istype(exprs[0], ast_entfield))
@@ -1065,7 +1070,7 @@ static bool parser_sy_pop(parser_t *parser, shunt *sy)
                            ty1, ty2);
                 return false;
             }
-            if (ast_istype(exprs[0], ast_value) && asvalue[0]->constant) {
+            if (ast_istype(exprs[0], ast_value) && asvalue[0]->cvq == CV_CONST) {
                 parseerror(parser, "assignment to constant `%s`", asvalue[0]->name);
             }
             if (ast_istype(exprs[0], ast_entfield))
@@ -1109,7 +1114,7 @@ static bool parser_sy_pop(parser_t *parser, shunt *sy)
                            ty1, ty2);
                 return false;
             }
-            if (ast_istype(exprs[0], ast_value) && asvalue[0]->constant) {
+            if (ast_istype(exprs[0], ast_value) && asvalue[0]->cvq == CV_CONST) {
                 parseerror(parser, "assignment to constant `%s`", asvalue[0]->name);
             }
             if (ast_istype(exprs[0], ast_entfield))
@@ -1139,7 +1144,7 @@ static bool parser_sy_pop(parser_t *parser, shunt *sy)
             out = (ast_expression*)ast_binary_new(ctx, INSTR_BITAND, exprs[0], exprs[1]);
             if (!out)
                 return false;
-            if (ast_istype(exprs[0], ast_value) && asvalue[0]->constant) {
+            if (ast_istype(exprs[0], ast_value) && asvalue[0]->cvq == CV_CONST) {
                 parseerror(parser, "assignment to constant `%s`", asvalue[0]->name);
             }
             asbinstore = ast_binstore_new(ctx, assignop, INSTR_SUB_F, exprs[0], out);
@@ -1302,6 +1307,13 @@ static bool parser_close_paren(parser_t *parser, shunt *sy, bool functions_only)
                 return false;
             return true;
         }
+        if (sy->ops[vec_size(sy->ops)-1].paren == SY_PAREN_TERNARY) {
+            if (functions_only)
+                return false;
+            /* pop off the parenthesis */
+            vec_shrinkby(sy->ops, 1);
+            return true;
+        }
         if (!parser_sy_pop(parser, sy))
             return false;
     }
@@ -1416,8 +1428,14 @@ static ast_expression* parse_expression_leave(parser_t *parser, bool stopatcomma
                 parseerror(parser, "unexpected ident: %s", parser_tokval(parser));
                 goto onerr;
             }
-            if (ast_istype(var, ast_value))
+            if (ast_istype(var, ast_value)) {
                 ((ast_value*)var)->uses++;
+            }
+            else if (ast_istype(var, ast_member)) {
+                ast_member *mem = (ast_member*)var;
+                if (ast_istype(mem->owner, ast_value))
+                    ((ast_value*)(mem->owner))->uses++;
+            }
             vec_push(sy.out, syexp(parser_ctx(parser), var));
             DEBUGSHUNTDO(con_out("push %s\n", parser_tokval(parser)));
         }
@@ -1615,10 +1633,13 @@ static ast_expression* parse_expression_leave(parser_t *parser, bool stopatcomma
             } else if (op->id == opid2('?',':')) {
                 wantop = false;
                 vec_push(sy.ops, syop(parser_ctx(parser), op));
+                vec_push(sy.ops, syparen(parser_ctx(parser), SY_PAREN_TERNARY, 0));
                 wantop = false;
                 --ternaries;
             } else if (op->id == opid2(':','?')) {
-                /* we don't push this operator */
+                if (!parser_close_paren(parser, &sy, false))
+                    goto onerr;
+                vec_push(sy.ops, syop(parser_ctx(parser), op));
                 wantop = false;
                 ++ternaries;
             } else {
@@ -1678,6 +1699,7 @@ static void parser_enterblock(parser_t *parser)
     vec_push(parser->_blocklocals, vec_size(parser->_locals));
     vec_push(parser->typedefs, util_htnew(TYPEDEF_HT_SIZE));
     vec_push(parser->_blocktypedefs, vec_size(parser->_typedefs));
+    vec_push(parser->_block_ctx, parser_ctx(parser));
 }
 
 static bool parser_leaveblock(parser_t *parser)
@@ -1704,8 +1726,10 @@ static bool parser_leaveblock(parser_t *parser)
         ast_value      *v = (ast_value*)e;
         vec_pop(parser->_locals);
         if (ast_istype(e, ast_value) && !v->uses) {
-            if (parsewarning(parser, WARN_UNUSED_VARIABLE, "unused variable: `%s`", v->name))
+            if (compile_warning(ast_ctx(v), WARN_UNUSED_VARIABLE, "unused variable: `%s`", v->name)) {
+                parser->errors++;
                 rv = false;
+            }
         }
     }
 
@@ -1717,6 +1741,7 @@ static bool parser_leaveblock(parser_t *parser)
     util_htdel(vec_last(parser->typedefs));
     vec_pop(parser->typedefs);
 
+    vec_pop(parser->_block_ctx);
     return rv;
 }
 
@@ -1773,8 +1798,7 @@ static bool parse_if(parser_t *parser, ast_block *block, ast_expression **out)
         ast_delete(cond);
         return false;
     }
-    ontrue = parse_statement_or_block(parser);
-    if (!ontrue) {
+    if (!parse_statement_or_block(parser, &ontrue)) {
         ast_delete(cond);
         return false;
     }
@@ -1787,8 +1811,7 @@ static bool parse_if(parser_t *parser, ast_block *block, ast_expression **out)
             ast_delete(cond);
             return false;
         }
-        onfalse = parse_statement_or_block(parser);
-        if (!onfalse) {
+        if (!parse_statement_or_block(parser, &onfalse)) {
             ast_delete(ontrue);
             ast_delete(cond);
             return false;
@@ -1838,8 +1861,7 @@ static bool parse_while(parser_t *parser, ast_block *block, ast_expression **out
         ast_delete(cond);
         return false;
     }
-    ontrue = parse_statement_or_block(parser);
-    if (!ontrue) {
+    if (!parse_statement_or_block(parser, &ontrue)) {
         ast_delete(cond);
         return false;
     }
@@ -1863,8 +1885,7 @@ static bool parse_dowhile(parser_t *parser, ast_block *block, ast_expression **o
         parseerror(parser, "expected loop body");
         return false;
     }
-    ontrue = parse_statement_or_block(parser);
-    if (!ontrue)
+    if (!parse_statement_or_block(parser, &ontrue))
         return false;
 
     /* expect the "while" */
@@ -2014,10 +2035,8 @@ static bool parse_for(parser_t *parser, ast_block *block, ast_expression **out)
         parseerror(parser, "expected for-loop body");
         goto onerr;
     }
-    ontrue = parse_statement_or_block(parser);
-    if (!ontrue) {
+    if (!parse_statement_or_block(parser, &ontrue))
         goto onerr;
-    }
 
     aloop = ast_loop_new(ctx, initexpr, cond, NULL, increment, ontrue);
     *out = (ast_expression*)aloop;
@@ -2038,6 +2057,8 @@ static bool parse_return(parser_t *parser, ast_block *block, ast_expression **ou
     ast_expression *exp = NULL;
     ast_return     *ret = NULL;
     ast_value      *expected = parser->function->vtype;
+
+    lex_ctx ctx = parser_ctx(parser);
 
     (void)block; /* not touching */
 
@@ -2069,7 +2090,7 @@ static bool parse_return(parser_t *parser, ast_block *block, ast_expression **ou
             else
                 parseerror(parser, "return without value");
         }
-        ret = ast_return_new(parser_ctx(parser), NULL);
+        ret = ast_return_new(ctx, NULL);
     }
     *out = (ast_expression*)ret;
     return true;
@@ -2097,6 +2118,7 @@ static bool parse_switch(parser_t *parser, ast_block *block, ast_expression **ou
 {
     ast_expression *operand;
     ast_value      *opval;
+    ast_value      *typevar;
     ast_switch     *switchnode;
     ast_switch_case swcase;
 
@@ -2143,6 +2165,55 @@ static bool parse_switch(parser_t *parser, ast_block *block, ast_expression **ou
         return false;
     }
 
+    /* new block; allow some variables to be declared here */
+    parser_enterblock(parser);
+    while (true) {
+        typevar = NULL;
+        if (parser->tok == TOKEN_IDENT)
+            typevar = parser_find_typedef(parser, parser_tokval(parser), 0);
+        if (typevar || parser->tok == TOKEN_TYPENAME) {
+            if (!parse_variable(parser, block, false, CV_NONE, typevar)) {
+                ast_delete(switchnode);
+                return false;
+            }
+            continue;
+        }
+        if (!strcmp(parser_tokval(parser), "var") ||
+            !strcmp(parser_tokval(parser), "local"))
+        {
+            if (!parser_next(parser)) {
+                parseerror(parser, "expected variable declaration");
+                ast_delete(switchnode);
+                return false;
+            }
+            if (!parse_variable(parser, block, false, CV_VAR, NULL)) {
+                ast_delete(switchnode);
+                return false;
+            }
+            continue;
+        }
+        if (!strcmp(parser_tokval(parser), "const")) {
+            if (!parser_next(parser)) {
+                parseerror(parser, "expected variable declaration");
+                ast_delete(switchnode);
+                return false;
+            }
+            if (!strcmp(parser_tokval(parser), "var")) {
+                if (!parser_next(parser)) {
+                    parseerror(parser, "expected variable declaration");
+                    ast_delete(switchnode);
+                    return false;
+                }
+            }
+            if (!parse_variable(parser, block, false, CV_CONST, NULL)) {
+                ast_delete(switchnode);
+                return false;
+            }
+            continue;
+        }
+        break;
+    }
+
     /* case list! */
     while (parser->tok != '}') {
         ast_block *caseblock;
@@ -2166,7 +2237,7 @@ static bool parse_switch(parser_t *parser, ast_block *block, ast_expression **ou
             }
             if (!OPTS_FLAG(RELAXED_SWITCH)) {
                 opval = (ast_value*)swcase.value;
-                if (!ast_istype(swcase.value, ast_value)) { /* || !opval->constant) { */
+                if (!ast_istype(swcase.value, ast_value)) { /* || opval->cvq != CV_CONST) { */
                     parseerror(parser, "case on non-constant values need to be explicitly enabled via -frelaxed-switch");
                     ast_unref(operand);
                     return false;
@@ -2224,6 +2295,8 @@ static bool parse_switch(parser_t *parser, ast_block *block, ast_expression **ou
             ast_block_add_expr(caseblock, expr);
         }
     }
+
+    parser_leaveblock(parser);
 
     /* closing paren */
     if (parser->tok != '}') {
@@ -2426,7 +2499,7 @@ ident_var:
     else if (parser->tok == '{')
     {
         ast_block *inner;
-        inner = parse_block(parser, false);
+        inner = parse_block(parser);
         if (!inner)
             return false;
         *out = (ast_expression*)inner;
@@ -2484,7 +2557,7 @@ ident_var:
     }
 }
 
-static bool parse_block_into(parser_t *parser, ast_block *block, bool warnreturn)
+static bool parse_block_into(parser_t *parser, ast_block *block)
 {
     bool   retval = true;
 
@@ -2514,17 +2587,6 @@ static bool parse_block_into(parser_t *parser, ast_block *block, bool warnreturn
     if (parser->tok != '}') {
         block = NULL;
     } else {
-        if (warnreturn && parser->function->vtype->expression.next->expression.vtype != TYPE_VOID)
-        {
-            if (!vec_size(block->exprs) ||
-                !ast_istype(vec_last(block->exprs), ast_return))
-            {
-                if (parsewarning(parser, WARN_MISSING_RETURN_VALUES, "control reaches end of non-void function")) {
-                    block = NULL;
-                    goto cleanup;
-                }
-            }
-        }
         (void)parser_next(parser);
     }
 
@@ -2534,27 +2596,26 @@ cleanup:
     return retval && !!block;
 }
 
-static ast_block* parse_block(parser_t *parser, bool warnreturn)
+static ast_block* parse_block(parser_t *parser)
 {
     ast_block *block;
     block = ast_block_new(parser_ctx(parser));
     if (!block)
         return NULL;
-    if (!parse_block_into(parser, block, warnreturn)) {
+    if (!parse_block_into(parser, block)) {
         ast_block_delete(block);
         return NULL;
     }
     return block;
 }
 
-static ast_expression* parse_statement_or_block(parser_t *parser)
+static bool parse_statement_or_block(parser_t *parser, ast_expression **out)
 {
-    ast_expression *expr = NULL;
-    if (parser->tok == '{')
-        return (ast_expression*)parse_block(parser, false);
-    if (!parse_statement(parser, NULL, &expr, false))
-        return NULL;
-    return expr;
+    if (parser->tok == '{') {
+        *out = (ast_expression*)parse_block(parser);
+        return !!*out;
+    }
+    return parse_statement(parser, NULL, out, false);
 }
 
 static bool create_vector_members(ast_value *var, ast_member **me)
@@ -2833,7 +2894,7 @@ static bool parse_function_body(parser_t *parser, ast_value *var)
     vec_push(parser->functions, func);
 
     parser->function = func;
-    if (!parse_block_into(parser, block, true)) {
+    if (!parse_block_into(parser, block)) {
         ast_block_delete(block);
         goto enderrfn;
     }
@@ -3577,7 +3638,7 @@ static bool parse_typedef(parser_t *parser)
     return true;
 }
 
-static bool parse_variable(parser_t *parser, ast_block *localblock, bool nofields, int is_const_var, ast_value *cached_typedef)
+static bool parse_variable(parser_t *parser, ast_block *localblock, bool nofields, int qualifier, ast_value *cached_typedef)
 {
     ast_value *var;
     ast_value *proto;
@@ -3640,8 +3701,7 @@ static bool parse_variable(parser_t *parser, ast_block *localblock, bool nofield
             }
         }
 
-        if (is_const_var == CV_CONST)
-            var->constant = true;
+        var->cvq = qualifier;
 
         /* Part 1:
          * check for validity: (end_sys_..., multiple-definitions, prototypes, ...)
@@ -3812,7 +3872,8 @@ static bool parse_variable(parser_t *parser, ast_block *localblock, bool nofield
 
             if (!localblock) {
                 /* deal with global variables, fields, functions */
-                if (!nofields && var->expression.vtype == TYPE_FIELD) {
+                if (!nofields && var->expression.vtype == TYPE_FIELD && parser->tok != '=') {
+                    var->isfield = true;
                     vec_push(parser->fields, (ast_expression*)var);
                     util_htset(parser->htfields, var->name, var);
                     if (isvector) {
@@ -3900,7 +3961,10 @@ skipvar:
         if (parser->tok == ',')
             goto another;
 
+        /*
         if (!var || (!localblock && !nofields && basetype->expression.vtype == TYPE_FIELD)) {
+        */
+        if (!var) {
             parseerror(parser, "missing comma or semicolon while parsing variables");
             break;
         }
@@ -3948,7 +4012,7 @@ skipvar:
                 parseerror(parser, "builtin number must be an integer constant");
                 break;
             }
-            if (parser_token(parser)->constval.i <= 0) {
+            if (parser_token(parser)->constval.i < 0) {
                 parseerror(parser, "builtin number must be an integer greater than zero");
                 break;
             }
@@ -3968,7 +4032,7 @@ skipvar:
                 }
                 vec_push(parser->functions, func);
 
-                func->builtin = -parser_token(parser)->constval.i;
+                func->builtin = -parser_token(parser)->constval.i-1;
             }
 
             if (!parser_next(parser)) {
@@ -3986,6 +4050,9 @@ skipvar:
                 parseerror(parser, "cannot declare functions within functions");
                 break;
             }
+
+            if (proto)
+                ast_ctx(proto) = parser_ctx(parser);
 
             if (!parse_function_body(parser, var))
                 break;
@@ -4005,19 +4072,21 @@ skipvar:
 
             if (!localblock) {
                 cval = (ast_value*)cexp;
-                if (!ast_istype(cval, ast_value) || !cval->hasvalue || !cval->constant)
+                if (!ast_istype(cval, ast_value) || ((!cval->hasvalue || cval->cvq != CV_CONST) && !cval->isfield))
                     parseerror(parser, "cannot initialize a global constant variable with a non-constant expression");
                 else
                 {
                     if (opts_standard != COMPILER_GMQCC &&
                         !OPTS_FLAG(INITIALIZED_NONCONSTANTS) &&
-                        is_const_var != CV_VAR)
+                        qualifier != CV_VAR)
                     {
-                        var->constant = true;
+                        var->cvq = CV_CONST;
                     }
                     var->hasvalue = true;
                     if (cval->expression.vtype == TYPE_STRING)
                         var->constval.vstring = parser_strdup(cval->constval.vstring);
+                    else if (cval->expression.vtype == TYPE_FIELD)
+                        var->constval.vfield = cval;
                     else
                         memcpy(&var->constval, &cval->constval, sizeof(var->constval));
                     ast_unref(cval);
@@ -4025,8 +4094,8 @@ skipvar:
             } else {
                 bool cvq;
                 shunt sy = { NULL, NULL };
-                cvq = var->constant;
-                var->constant = false;
+                cvq = var->cvq;
+                var->cvq = CV_NONE;
                 vec_push(sy.out, syexp(ast_ctx(var), (ast_expression*)var));
                 vec_push(sy.out, syexp(ast_ctx(cexp), (ast_expression*)cexp));
                 vec_push(sy.ops, syop(ast_ctx(var), parser->assign_op));
@@ -4039,7 +4108,7 @@ skipvar:
                 }
                 vec_free(sy.out);
                 vec_free(sy.ops);
-                var->constant = cvq;
+                var->cvq = cvq;
             }
         }
 
@@ -4109,6 +4178,13 @@ static bool parser_global_statement(parser_t *parser)
             if (!parser_next(parser)) {
                 parseerror(parser, "expected variable declaration after 'var'");
                 return false;
+            }
+            if (parser->tok == TOKEN_KEYWORD && !strcmp(parser_tokval(parser), "const")) {
+                (void)!parsewarning(parser, WARN_CONST_VAR, "ignoring `const` after 'var' qualifier");
+                if (!parser_next(parser)) {
+                    parseerror(parser, "expected variable declaration after 'const var'");
+                    return false;
+                }
             }
             return parse_variable(parser, NULL, true, CV_VAR, NULL);
         }
@@ -4370,6 +4446,8 @@ void parser_cleanup()
         util_htdel(parser->typedefs[i]);
     vec_free(parser->typedefs);
     vec_free(parser->_blocktypedefs);
+
+    vec_free(parser->_block_ctx);
 
     vec_free(parser->labels);
     vec_free(parser->gotos);
