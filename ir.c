@@ -24,7 +24,7 @@
 #include <string.h>
 #include "gmqcc.h"
 #include "ir.h"
-
+mem_heap_t *ir_heap;
 /***********************************************************************
  * Type sizes used at multiple points in the IR codegen
  */
@@ -274,7 +274,7 @@ ir_builder* ir_builder_new(const char *modulename)
 {
     ir_builder* self;
 
-    self = (ir_builder*)mem_a(sizeof(*self));
+    self = (ir_builder*)mem_alloc(ir_heap, sizeof(*self));
     if (!self)
         return NULL;
 
@@ -291,7 +291,7 @@ ir_builder* ir_builder_new(const char *modulename)
     self->str_immediate = 0;
     self->name = NULL;
     if (!ir_builder_set_name(self, modulename)) {
-        mem_d(self);
+        mem_free(ir_heap, self);
         return NULL;
     }
 
@@ -304,33 +304,33 @@ void ir_builder_delete(ir_builder* self)
     util_htdel(self->htglobals);
     util_htdel(self->htfields);
     util_htdel(self->htfunctions);
-    mem_d((void*)self->name);
+    mem_free(ir_heap, (void*)self->name);
     for (i = 0; i != vec_size(self->functions); ++i) {
         ir_function_delete_quick(self->functions[i]);
     }
-    vec_free(self->functions);
+    vec_free(ir_heap, self->functions);
     for (i = 0; i != vec_size(self->extparams); ++i) {
         ir_value_delete(self->extparams[i]);
     }
-    vec_free(self->extparams);
+    vec_free(ir_heap, self->extparams);
     for (i = 0; i != vec_size(self->globals); ++i) {
         ir_value_delete(self->globals[i]);
     }
-    vec_free(self->globals);
+    vec_free(ir_heap, self->globals);
     for (i = 0; i != vec_size(self->fields); ++i) {
         ir_value_delete(self->fields[i]);
     }
-    vec_free(self->fields);
-    vec_free(self->filenames);
-    vec_free(self->filestrings);
-    mem_d(self);
+    vec_free(ir_heap, self->fields);
+    vec_free(ir_heap, self->filenames);
+    vec_free(ir_heap, self->filestrings);
+    mem_free(ir_heap, self);
 }
 
 bool ir_builder_set_name(ir_builder *self, const char *name)
 {
     if (self->name)
-        mem_d((void*)self->name);
-    self->name = util_strdup(name);
+        mem_free(ir_heap, (void*)self->name);
+    self->name = util_strdup(ir_heap, name);
     return !!self->name;
 }
 
@@ -352,7 +352,7 @@ ir_function* ir_builder_create_function(ir_builder *self, const char *name, int 
         ir_function_delete(fn);
         return NULL;
     }
-    vec_push(self->functions, fn);
+    vec_push(ir_heap, self->functions, fn);
     util_htset(self->htfunctions, name, fn);
 
     fn->value = ir_builder_create_global(self, fn->name, TYPE_FUNCTION);
@@ -387,7 +387,7 @@ ir_value* ir_builder_create_global(ir_builder *self, const char *name, int vtype
     }
 
     ve = ir_value_var(name, store_global, vtype);
-    vec_push(self->globals, ve);
+    vec_push(ir_heap, self->globals, ve);
     util_htset(self->htglobals, name, ve);
     return ve;
 }
@@ -407,7 +407,7 @@ ir_value* ir_builder_create_field(ir_builder *self, const char *name, int vtype)
 
     ve = ir_value_var(name, store_global, TYPE_FIELD);
     ve->fieldtype = vtype;
-    vec_push(self->fields, ve);
+    vec_push(ir_heap, self->fields, ve);
     util_htset(self->htfields, name, ve);
     return ve;
 }
@@ -424,7 +424,7 @@ bool ir_function_allocate_locals(ir_function*);
 ir_function* ir_function_new(ir_builder* owner, int outtype)
 {
     ir_function *self;
-    self = (ir_function*)mem_a(sizeof(*self));
+    self = (ir_function*)mem_alloc(ir_heap, sizeof(*self));
 
     if (!self)
         return NULL;
@@ -433,7 +433,7 @@ ir_function* ir_function_new(ir_builder* owner, int outtype)
 
     self->name = NULL;
     if (!ir_function_set_name(self, "<@unnamed>")) {
-        mem_d(self);
+        mem_free(ir_heap, self);
         return NULL;
     }
     self->owner = owner;
@@ -458,69 +458,69 @@ ir_function* ir_function_new(ir_builder* owner, int outtype)
 bool ir_function_set_name(ir_function *self, const char *name)
 {
     if (self->name)
-        mem_d((void*)self->name);
-    self->name = util_strdup(name);
+        mem_free(ir_heap, (void*)self->name);
+    self->name = util_strdup(ir_heap, name);
     return !!self->name;
 }
 
 static void ir_function_delete_quick(ir_function *self)
 {
     size_t i;
-    mem_d((void*)self->name);
+    mem_free(ir_heap, (void*)self->name);
 
     for (i = 0; i != vec_size(self->blocks); ++i)
         ir_block_delete_quick(self->blocks[i]);
-    vec_free(self->blocks);
+    vec_free(ir_heap, self->blocks);
 
-    vec_free(self->params);
+    vec_free(ir_heap, self->params);
 
     for (i = 0; i != vec_size(self->values); ++i)
         ir_value_delete(self->values[i]);
-    vec_free(self->values);
+    vec_free(ir_heap, self->values);
 
     for (i = 0; i != vec_size(self->locals); ++i)
         ir_value_delete(self->locals[i]);
-    vec_free(self->locals);
+    vec_free(ir_heap, self->locals);
 
     /* self->value is deleted by the builder */
 
-    mem_d(self);
+    mem_free(ir_heap, self);
 }
 
 void ir_function_delete(ir_function *self)
 {
     size_t i;
-    mem_d((void*)self->name);
+    mem_free(ir_heap, (void*)self->name);
 
     for (i = 0; i != vec_size(self->blocks); ++i)
         ir_block_delete(self->blocks[i]);
-    vec_free(self->blocks);
+    vec_free(ir_heap, self->blocks);
 
-    vec_free(self->params);
+    vec_free(ir_heap, self->params);
 
     for (i = 0; i != vec_size(self->values); ++i)
         ir_value_delete(self->values[i]);
-    vec_free(self->values);
+    vec_free(ir_heap, self->values);
 
     for (i = 0; i != vec_size(self->locals); ++i)
         ir_value_delete(self->locals[i]);
-    vec_free(self->locals);
+    vec_free(ir_heap, self->locals);
 
     /* self->value is deleted by the builder */
 
-    mem_d(self);
+    mem_free(ir_heap, self);
 }
 
 void ir_function_collect_value(ir_function *self, ir_value *v)
 {
-    vec_push(self->values, v);
+    vec_push(ir_heap, self->values, v);
 }
 
 ir_block* ir_function_create_block(lex_ctx ctx, ir_function *self, const char *label)
 {
     ir_block* bn = ir_block_new(self, label);
     bn->context = ctx;
-    vec_push(self->blocks, bn);
+    vec_push(ir_heap, self->blocks, bn);
     return bn;
 }
 
@@ -647,7 +647,7 @@ ir_value* ir_function_create_local(ir_function *self, const char *name, int vtyp
     }
 
     ve = ir_value_var(name, (param ? store_param : store_local), vtype);
-    vec_push(self->locals, ve);
+    vec_push(ir_heap, self->locals, ve);
     return ve;
 }
 
@@ -658,7 +658,7 @@ ir_value* ir_function_create_local(ir_function *self, const char *name, int vtyp
 ir_block* ir_block_new(ir_function* owner, const char *name)
 {
     ir_block *self;
-    self = (ir_block*)mem_a(sizeof(*self));
+    self = (ir_block*)mem_alloc(ir_heap, sizeof(*self));
     if (!self)
         return NULL;
 
@@ -666,7 +666,7 @@ ir_block* ir_block_new(ir_function* owner, const char *name)
 
     self->label = NULL;
     if (name && !ir_block_set_label(self, name)) {
-        mem_d(self);
+        mem_free(ir_heap, self);
         return NULL;
     }
     self->owner = owner;
@@ -692,34 +692,34 @@ ir_block* ir_block_new(ir_function* owner, const char *name)
 static void ir_block_delete_quick(ir_block* self)
 {
     size_t i;
-    if (self->label) mem_d(self->label);
+    if (self->label) mem_free(ir_heap, self->label);
     for (i = 0; i != vec_size(self->instr); ++i)
         ir_instr_delete_quick(self->instr[i]);
-    vec_free(self->instr);
-    vec_free(self->entries);
-    vec_free(self->exits);
-    vec_free(self->living);
-    mem_d(self);
+    vec_free(ir_heap, self->instr);
+    vec_free(ir_heap, self->entries);
+    vec_free(ir_heap, self->exits);
+    vec_free(ir_heap, self->living);
+    mem_free(ir_heap, self);
 }
 
 void ir_block_delete(ir_block* self)
 {
     size_t i;
-    if (self->label) mem_d(self->label);
+    if (self->label) mem_free(ir_heap, self->label);
     for (i = 0; i != vec_size(self->instr); ++i)
         ir_instr_delete(self->instr[i]);
-    vec_free(self->instr);
-    vec_free(self->entries);
-    vec_free(self->exits);
-    vec_free(self->living);
-    mem_d(self);
+    vec_free(ir_heap, self->instr);
+    vec_free(ir_heap, self->entries);
+    vec_free(ir_heap, self->exits);
+    vec_free(ir_heap, self->living);
+    mem_free(ir_heap, self);
 }
 
 bool ir_block_set_label(ir_block *self, const char *name)
 {
     if (self->label)
-        mem_d((void*)self->label);
-    self->label = util_strdup(name);
+        mem_free(ir_heap, (void*)self->label);
+    self->label = util_strdup(ir_heap, name);
     return !!self->label;
 }
 
@@ -730,7 +730,7 @@ bool ir_block_set_label(ir_block *self, const char *name)
 ir_instr* ir_instr_new(lex_ctx ctx, ir_block* owner, int op)
 {
     ir_instr *self;
-    self = (ir_instr*)mem_a(sizeof(*self));
+    self = (ir_instr*)mem_alloc(ir_heap, sizeof(*self));
     if (!self)
         return NULL;
 
@@ -754,9 +754,9 @@ ir_instr* ir_instr_new(lex_ctx ctx, ir_block* owner, int op)
 
 static void ir_instr_delete_quick(ir_instr *self)
 {
-    vec_free(self->phi);
-    vec_free(self->params);
-    mem_d(self);
+    vec_free(ir_heap, self->phi);
+    vec_free(ir_heap, self->params);
+    mem_free(ir_heap, self);
 }
 
 void ir_instr_delete(ir_instr *self)
@@ -775,7 +775,7 @@ void ir_instr_delete(ir_instr *self)
         if (vec_ir_instr_find(self->phi[i].value->reads, self, &idx))
             vec_remove(self->phi[i].value->reads, idx, 1);
     }
-    vec_free(self->phi);
+    vec_free(ir_heap, self->phi);
     for (i = 0; i < vec_size(self->params); ++i) {
         size_t idx;
         if (vec_ir_instr_find(self->params[i]->writes, self, &idx))
@@ -783,11 +783,11 @@ void ir_instr_delete(ir_instr *self)
         if (vec_ir_instr_find(self->params[i]->reads, self, &idx))
             vec_remove(self->params[i]->reads, idx, 1);
     }
-    vec_free(self->params);
+    vec_free(ir_heap, self->params);
     (void)!ir_instr_op(self, 0, NULL, false);
     (void)!ir_instr_op(self, 1, NULL, false);
     (void)!ir_instr_op(self, 2, NULL, false);
-    mem_d(self);
+    mem_free(ir_heap, self);
 }
 
 bool ir_instr_op(ir_instr *self, int op, ir_value *v, bool writing)
@@ -801,9 +801,9 @@ bool ir_instr_op(ir_instr *self, int op, ir_value *v, bool writing)
     }
     if (v) {
         if (writing)
-            vec_push(v->writes, self);
+            vec_push(ir_heap, v->writes, self);
         else
-            vec_push(v->reads, self);
+            vec_push(ir_heap, v->reads, self);
     }
     self->_ops[op] = v;
     return true;
@@ -831,7 +831,7 @@ int32_t ir_value_code_addr(const ir_value *self)
 ir_value* ir_value_var(const char *name, int storetype, int vtype)
 {
     ir_value *self;
-    self = (ir_value*)mem_a(sizeof(*self));
+    self = (ir_value*)mem_alloc(ir_heap, sizeof(*self));
     self->vtype = vtype;
     self->fieldtype = TYPE_VOID;
     self->outtype = TYPE_VOID;
@@ -847,7 +847,7 @@ ir_value* ir_value_var(const char *name, int storetype, int vtype)
     self->name = NULL;
     if (name && !ir_value_set_name(self, name)) {
         irerror(self->context, "out of memory");
-        mem_d(self);
+        mem_free(ir_heap, self);
         return NULL;
     }
 
@@ -918,27 +918,27 @@ void ir_value_delete(ir_value* self)
 {
     size_t i;
     if (self->name)
-        mem_d((void*)self->name);
+        mem_free(ir_heap, (void*)self->name);
     if (self->hasvalue)
     {
         if (self->vtype == TYPE_STRING)
-            mem_d((void*)self->constval.vstring);
+            mem_free(ir_heap, (void*)self->constval.vstring);
     }
     for (i = 0; i < 3; ++i) {
         if (self->members[i])
             ir_value_delete(self->members[i]);
     }
-    vec_free(self->reads);
-    vec_free(self->writes);
-    vec_free(self->life);
-    mem_d(self);
+    vec_free(ir_heap, self->reads);
+    vec_free(ir_heap, self->writes);
+    vec_free(ir_heap, self->life);
+    mem_free(ir_heap, self);
 }
 
 bool ir_value_set_name(ir_value *self, const char *name)
 {
     if (self->name)
-        mem_d((void*)self->name);
-    self->name = util_strdup(name);
+        mem_free(ir_heap, (void*)self->name);
+    self->name = util_strdup(ir_heap, name);
     return !!self->name;
 }
 
@@ -982,11 +982,11 @@ static char *ir_strdup(const char *str)
 {
     if (str && !*str) {
         /* actually dup empty strings */
-        char *out = mem_a(1);
+        char *out = mem_alloc(ir_heap, 1);
         *out = 0;
         return out;
     }
-    return util_strdup(str);
+    return util_strdup(ir_heap, str);
 }
 
 bool ir_value_set_string(ir_value *self, const char *str)
@@ -1026,7 +1026,7 @@ bool ir_value_lives(ir_value *self, size_t at)
 bool ir_value_life_insert(ir_value *self, size_t idx, ir_life_entry_t e)
 {
     size_t k;
-    vec_push(self->life, e);
+    vec_push(ir_heap, self->life, e);
     for (k = vec_size(self->life)-1; k > idx; --k)
         self->life[k] = self->life[k-1];
     self->life[idx] = e;
@@ -1060,7 +1060,7 @@ bool ir_value_life_merge(ir_value *self, size_t s)
         if (life && life->end >= s)
             return false;
         e.start = e.end = s;
-        vec_push(self->life, e);
+        vec_push(ir_heap, self->life, e);
         return true;
     }
     /* found */
@@ -1104,7 +1104,7 @@ bool ir_value_life_merge_into(ir_value *self, const ir_value *other)
 
     if (!vec_size(self->life)) {
         size_t count = vec_size(other->life);
-        ir_life_entry_t *life = vec_add(self->life, count);
+        ir_life_entry_t *life = vec_add(ir_heap, self->life, count);
         memcpy(life, other->life, count * sizeof(*life));
         return true;
     }
@@ -1157,7 +1157,7 @@ bool ir_value_life_merge_into(ir_value *self, const ir_value *other)
                 ++myi;
                 /* append if we're at the end */
                 if (myi >= vec_size(self->life)) {
-                    vec_push(self->life, *life);
+                    vec_push(ir_heap, self->life, *life);
                     break;
                 }
                 /* otherweise check the next range */
@@ -1252,7 +1252,7 @@ bool ir_block_create_store_op(ir_block *self, lex_ctx ctx, int op, ir_value *tar
     {
         return false;
     }
-    vec_push(self->instr, in);
+    vec_push(ir_heap, self->instr, in);
     return true;
 }
 
@@ -1319,7 +1319,7 @@ bool ir_block_create_return(ir_block *self, lex_ctx ctx, ir_value *v)
     if (v && !ir_instr_op(in, 0, v, false))
         return false;
 
-    vec_push(self->instr, in);
+    vec_push(ir_heap, self->instr, in);
     return true;
 }
 
@@ -1345,12 +1345,12 @@ bool ir_block_create_if(ir_block *self, lex_ctx ctx, ir_value *v,
     in->bops[0] = ontrue;
     in->bops[1] = onfalse;
 
-    vec_push(self->instr, in);
+    vec_push(ir_heap, self->instr, in);
 
-    vec_push(self->exits, ontrue);
-    vec_push(self->exits, onfalse);
-    vec_push(ontrue->entries,  self);
-    vec_push(onfalse->entries, self);
+    vec_push(ir_heap, self->exits, ontrue);
+    vec_push(ir_heap, self->exits, onfalse);
+    vec_push(ir_heap, ontrue->entries,  self);
+    vec_push(ir_heap, onfalse->entries, self);
     return true;
 }
 
@@ -1367,10 +1367,10 @@ bool ir_block_create_jump(ir_block *self, lex_ctx ctx, ir_block *to)
         return false;
 
     in->bops[0] = to;
-    vec_push(self->instr, in);
+    vec_push(ir_heap, self->instr, in);
 
-    vec_push(self->exits, to);
-    vec_push(to->entries, self);
+    vec_push(ir_heap, self->exits, to);
+    vec_push(ir_heap, to->entries, self);
     return true;
 }
 
@@ -1387,10 +1387,10 @@ bool ir_block_create_goto(ir_block *self, lex_ctx ctx, ir_block *to)
         return false;
 
     in->bops[0] = to;
-    vec_push(self->instr, in);
+    vec_push(ir_heap, self->instr, in);
 
-    vec_push(self->exits, to);
-    vec_push(to->entries, self);
+    vec_push(ir_heap, self->exits, to);
+    vec_push(ir_heap, to->entries, self);
     return true;
 }
 
@@ -1411,7 +1411,7 @@ ir_instr* ir_block_create_phi(ir_block *self, lex_ctx ctx, const char *label, in
         ir_value_delete(out);
         return NULL;
     }
-    vec_push(self->instr, in);
+    vec_push(ir_heap, self->instr, in);
     return in;
 }
 
@@ -1434,8 +1434,8 @@ void ir_phi_add(ir_instr* self, ir_block *b, ir_value *v)
 
     pe.value = v;
     pe.from = b;
-    vec_push(v->reads, self);
-    vec_push(self->phi, pe);
+    vec_push(ir_heap, v->reads, self);
+    vec_push(ir_heap, self->phi, pe);
 }
 
 /* call related code */
@@ -1458,7 +1458,7 @@ ir_instr* ir_block_create_call(ir_block *self, lex_ctx ctx, const char *label, i
         ir_value_delete(out);
         return NULL;
     }
-    vec_push(self->instr, in);
+    vec_push(ir_heap, self->instr, in);
     return in;
 }
 
@@ -1469,8 +1469,8 @@ ir_value* ir_call_value(ir_instr *self)
 
 void ir_call_param(ir_instr* self, ir_value *v)
 {
-    vec_push(self->params, v);
-    vec_push(v->reads, self);
+    vec_push(ir_heap, self->params, v);
+    vec_push(ir_heap, v->reads, self);
 }
 
 /* binary op related code */
@@ -1623,7 +1623,7 @@ ir_value* ir_block_create_general_instr(ir_block *self, lex_ctx ctx, const char 
         goto on_error;
     }
 
-    vec_push(self->instr, instr);
+    vec_push(ir_heap, self->instr, instr);
 
     return out;
 on_error:
@@ -1923,7 +1923,7 @@ static bool ir_block_naive_phi(ir_block *self)
                 if (!ir_block_create_store(b, instr->context, instr->_ops[0], v))
                     return false;
                 instr->_ops[0]->store = store_value;
-                vec_push(b->instr, prevjump);
+                vec_push(ir_heap, b->instr, prevjump);
                 b->final = true;
             }
 
@@ -2036,7 +2036,7 @@ bool ir_function_calculate_liferanges(ir_function *self)
         {
             if (self->blocks[i]->is_return)
             {
-                vec_free(self->blocks[i]->living);
+                vec_free(ir_heap, self->blocks[i]->living);
                 if (!ir_block_life_propagate(self->blocks[i], NULL, &changed))
                     return false;
             }
@@ -2081,8 +2081,8 @@ static bool function_allocator_alloc(function_allocator *alloc, const ir_value *
     if (!ir_value_life_merge_into(slot, var))
         goto localerror;
 
-    vec_push(alloc->locals, slot);
-    vec_push(alloc->sizes, vsize);
+    vec_push(ir_heap, alloc->locals, slot);
+    vec_push(ir_heap, alloc->sizes, vsize);
 
     return true;
 
@@ -2152,7 +2152,7 @@ bool ir_function_allocate_locals(ir_function *self)
     }
 
     /* Adjust slot positions based on sizes */
-    vec_push(alloc.positions, 0);
+    vec_push(ir_heap, alloc.positions, 0);
 
     if (vec_size(alloc.sizes))
         pos = alloc.positions[0] + alloc.sizes[0];
@@ -2161,7 +2161,7 @@ bool ir_function_allocate_locals(ir_function *self)
     for (i = 1; i < vec_size(alloc.sizes); ++i)
     {
         pos = alloc.positions[i-1] + alloc.sizes[i-1];
-        vec_push(alloc.positions, pos);
+        vec_push(ir_heap, alloc.positions, pos);
     }
 
     self->allocated_locals = pos + vec_last(alloc.sizes);
@@ -2178,9 +2178,9 @@ error:
 cleanup:
     for (i = 0; i < vec_size(alloc.locals); ++i)
         ir_value_delete(alloc.locals[i]);
-    vec_free(alloc.locals);
-    vec_free(alloc.sizes);
-    vec_free(alloc.positions);
+    vec_free(ir_heap, alloc.locals);
+    vec_free(ir_heap, alloc.sizes);
+    vec_free(ir_heap, alloc.positions);
     return retval;
 }
 
@@ -2267,7 +2267,7 @@ static bool ir_block_life_prop_previous(ir_block* self, ir_block *prev, bool *ch
     {
         if (vec_ir_value_find(self->living, prev->living[i], NULL))
             continue;
-        vec_push(self->living, prev->living[i]);
+        vec_push(ir_heap, self->living, prev->living[i]);
         /*
         irerror(self->contextt from prev: %s", self->label, prev->living[i]->_name);
         */
@@ -2304,7 +2304,7 @@ static bool ir_block_life_propagate(ir_block *self, ir_block *prev, bool *change
             if (value->memberof)
                 value = value->memberof;
             if (!vec_ir_value_find(self->living, value, NULL))
-                vec_push(self->living, value);
+                vec_push(ir_heap, self->living, value);
         }
 
         /* call params are read operands too */
@@ -2314,7 +2314,7 @@ static bool ir_block_life_propagate(ir_block *self, ir_block *prev, bool *change
             if (value->memberof)
                 value = value->memberof;
             if (!vec_ir_value_find(self->living, value, NULL))
-                vec_push(self->living, value);
+                vec_push(ir_heap, self->living, value);
         }
 
         /* See which operands are read and write operands */
@@ -2355,7 +2355,7 @@ static bool ir_block_life_propagate(ir_block *self, ir_block *prev, bool *change
             if (read & (1<<o))
             {
                 if (!vec_ir_value_find(self->living, value, NULL))
-                    vec_push(self->living, value);
+                    vec_push(ir_heap, self->living, value);
             }
 
             /* write operands */
@@ -2450,19 +2450,19 @@ static bool gen_global_field(ir_value *global)
 
         /* copy the field's value */
         ir_value_code_setaddr(global, vec_size(code_globals));
-        vec_push(code_globals, fld->code.fieldaddr);
+        vec_push(ir_heap, code_globals, fld->code.fieldaddr);
         if (global->fieldtype == TYPE_VECTOR) {
-            vec_push(code_globals, fld->code.fieldaddr+1);
-            vec_push(code_globals, fld->code.fieldaddr+2);
+            vec_push(ir_heap, code_globals, fld->code.fieldaddr+1);
+            vec_push(ir_heap, code_globals, fld->code.fieldaddr+2);
         }
     }
     else
     {
         ir_value_code_setaddr(global, vec_size(code_globals));
-        vec_push(code_globals, 0);
+        vec_push(ir_heap, code_globals, 0);
         if (global->fieldtype == TYPE_VECTOR) {
-            vec_push(code_globals, 0);
-            vec_push(code_globals, 0);
+            vec_push(ir_heap, code_globals, 0);
+            vec_push(ir_heap, code_globals, 0);
         }
     }
     if (global->code.globaladdr < 0)
@@ -2497,12 +2497,12 @@ static bool gen_global_pointer(ir_value *global)
         }
 
         ir_value_code_setaddr(global, vec_size(code_globals));
-        vec_push(code_globals, target->code.globaladdr);
+        vec_push(ir_heap, code_globals, target->code.globaladdr);
     }
     else
     {
         ir_value_code_setaddr(global, vec_size(code_globals));
-        vec_push(code_globals, 0);
+        vec_push(ir_heap, code_globals, 0);
     }
     if (global->code.globaladdr < 0)
         return false;
@@ -2799,8 +2799,8 @@ static qcint ir_builder_filestring(ir_builder *ir, const char *filename)
     }
 
     str = code_genstring(filename);
-    vec_push(ir->filenames, filename);
-    vec_push(ir->filestrings, str);
+    vec_push(ir_heap, ir->filenames, filename);
+    vec_push(ir_heap, ir->filestrings, str);
     return str;
 }
 
@@ -2856,7 +2856,7 @@ static bool gen_global_function(ir_builder *ir, ir_value *global)
     }
     for (i = 0; i < irfun->allocated_locals; ++i) {
         /* fill the locals with zeros */
-        vec_push(code_globals, 0);
+        vec_push(ir_heap, code_globals, 0);
     }
 
     fun.locals = vec_size(code_globals) - fun.firstlocal;
@@ -2868,7 +2868,7 @@ static bool gen_global_function(ir_builder *ir, ir_value *global)
         fun.entry = vec_size(code_statements);
     }
 
-    vec_push(code_functions, fun);
+    vec_push(ir_heap, code_functions, fun);
     return true;
 }
 
@@ -2885,13 +2885,13 @@ static void ir_gen_extparam(ir_builder *ir)
     def.type = TYPE_VECTOR;
     def.offset = vec_size(code_globals);
 
-    vec_push(code_defs, def);
+    vec_push(ir_heap, code_defs, def);
     ir_value_code_setaddr(global, def.offset);
-    vec_push(code_globals, 0);
-    vec_push(code_globals, 0);
-    vec_push(code_globals, 0);
+    vec_push(ir_heap, code_globals, 0);
+    vec_push(ir_heap, code_globals, 0);
+    vec_push(ir_heap, code_globals, 0);
 
-    vec_push(ir->extparams, global);
+    vec_push(ir_heap, ir->extparams, global);
 }
 
 static bool gen_function_extparam_copy(ir_function *self)
@@ -3009,15 +3009,15 @@ static bool ir_builder_gen_global(ir_builder *self, ir_value *global, bool isloc
          * fteqcc creates data for end_sys_* - of size 1, so let's do the same
          */
         ir_value_code_setaddr(global, vec_size(code_globals));
-        vec_push(code_globals, 0);
+        vec_push(ir_heap, code_globals, 0);
         /* Add the def */
-        vec_push(code_defs, def);
+        vec_push(ir_heap, code_defs, def);
         return true;
     case TYPE_POINTER:
-        vec_push(code_defs, def);
+        vec_push(ir_heap, code_defs, def);
         return gen_global_pointer(global);
     case TYPE_FIELD:
-        vec_push(code_defs, def);
+        vec_push(ir_heap, code_defs, def);
         return gen_global_field(global);
     case TYPE_ENTITY:
         /* fall through */
@@ -3026,13 +3026,13 @@ static bool ir_builder_gen_global(ir_builder *self, ir_value *global, bool isloc
         ir_value_code_setaddr(global, vec_size(code_globals));
         if (global->hasvalue) {
             iptr = (int32_t*)&global->constval.ivec[0];
-            vec_push(code_globals, *iptr);
+            vec_push(ir_heap, code_globals, *iptr);
         } else {
-            vec_push(code_globals, 0);
+            vec_push(ir_heap, code_globals, 0);
             if (!islocal)
                 def.type |= DEF_SAVEGLOBAL;
         }
-        vec_push(code_defs, def);
+        vec_push(ir_heap, code_defs, def);
 
         return global->code.globaladdr >= 0;
     }
@@ -3040,13 +3040,13 @@ static bool ir_builder_gen_global(ir_builder *self, ir_value *global, bool isloc
     {
         ir_value_code_setaddr(global, vec_size(code_globals));
         if (global->hasvalue) {
-            vec_push(code_globals, code_genstring(global->constval.vstring));
+            vec_push(ir_heap, code_globals, code_genstring(global->constval.vstring));
         } else {
-            vec_push(code_globals, 0);
+            vec_push(ir_heap, code_globals, 0);
             if (!islocal)
                 def.type |= DEF_SAVEGLOBAL;
         }
-        vec_push(code_defs, def);
+        vec_push(ir_heap, code_defs, def);
         return global->code.globaladdr >= 0;
     }
     case TYPE_VECTOR:
@@ -3055,49 +3055,49 @@ static bool ir_builder_gen_global(ir_builder *self, ir_value *global, bool isloc
         ir_value_code_setaddr(global, vec_size(code_globals));
         if (global->hasvalue) {
             iptr = (int32_t*)&global->constval.ivec[0];
-            vec_push(code_globals, iptr[0]);
+            vec_push(ir_heap, code_globals, iptr[0]);
             if (global->code.globaladdr < 0)
                 return false;
             for (d = 1; d < type_sizeof[global->vtype]; ++d)
             {
-                vec_push(code_globals, iptr[d]);
+                vec_push(ir_heap, code_globals, iptr[d]);
             }
         } else {
-            vec_push(code_globals, 0);
+            vec_push(ir_heap, code_globals, 0);
             if (global->code.globaladdr < 0)
                 return false;
             for (d = 1; d < type_sizeof[global->vtype]; ++d)
             {
-                vec_push(code_globals, 0);
+                vec_push(ir_heap, code_globals, 0);
             }
             if (!islocal)
                 def.type |= DEF_SAVEGLOBAL;
         }
 
-        vec_push(code_defs, def);
+        vec_push(ir_heap, code_defs, def);
         return global->code.globaladdr >= 0;
     }
     case TYPE_FUNCTION:
         ir_value_code_setaddr(global, vec_size(code_globals));
         if (!global->hasvalue) {
-            vec_push(code_globals, 0);
+            vec_push(ir_heap, code_globals, 0);
             if (global->code.globaladdr < 0)
                 return false;
         } else {
-            vec_push(code_globals, vec_size(code_functions));
+            vec_push(ir_heap, code_globals, vec_size(code_functions));
             if (!gen_global_function(self, global))
                 return false;
             if (!islocal)
                 def.type |= DEF_SAVEGLOBAL;
         }
-        vec_push(code_defs, def);
+        vec_push(ir_heap, code_defs, def);
         return true;
     case TYPE_VARIANT:
         /* assume biggest type */
             ir_value_code_setaddr(global, vec_size(code_globals));
-            vec_push(code_globals, 0);
+            vec_push(ir_heap, code_globals, 0);
             for (i = 1; i < type_sizeof[TYPE_VARIANT]; ++i)
-                vec_push(code_globals, 0);
+                vec_push(ir_heap, code_globals, 0);
             return true;
     default:
         /* refuse to create 'void' type or any other fancy business. */
@@ -3154,7 +3154,7 @@ static bool ir_builder_gen_field(ir_builder *self, ir_value *field)
 
     field->code.name = def.name;
 
-    vec_push(code_defs, def);
+    vec_push(ir_heap, code_defs, def);
 
     fld.type = field->fieldtype;
 
@@ -3165,13 +3165,13 @@ static bool ir_builder_gen_field(ir_builder *self, ir_value *field)
 
     fld.offset = field->code.fieldaddr;
 
-    vec_push(code_fields, fld);
+    vec_push(ir_heap, code_fields, fld);
 
     ir_value_code_setaddr(field, vec_size(code_globals));
-    vec_push(code_globals, fld.offset);
+    vec_push(ir_heap, code_globals, fld.offset);
     if (fld.type == TYPE_VECTOR) {
-        vec_push(code_globals, fld.offset+1);
-        vec_push(code_globals, fld.offset+2);
+        vec_push(ir_heap, code_globals, fld.offset+1);
+        vec_push(ir_heap, code_globals, fld.offset+2);
     }
 
     return field->code.globaladdr >= 0;
@@ -3240,14 +3240,14 @@ bool ir_builder_generate(ir_builder *self, const char *filename)
         char *dot;
         size_t filelen = strlen(filename);
 
-        memcpy(vec_add(lnofile, filelen+1), filename, filelen+1);
+        memcpy(vec_add(ir_heap, lnofile, filelen+1), filename, filelen+1);
         dot = strrchr(lnofile, '.');
         if (!dot) {
             vec_pop(lnofile);
         } else {
             vec_shrinkto(lnofile, dot - lnofile);
         }
-        memcpy(vec_add(lnofile, 5), ".lno", 5);
+        memcpy(vec_add(ir_heap, lnofile, 5), ".lno", 5);
     }
 
     if (lnofile)
@@ -3255,10 +3255,10 @@ bool ir_builder_generate(ir_builder *self, const char *filename)
     else
         con_out("writing '%s'\n", filename);
     if (!code_write(filename, lnofile)) {
-        vec_free(lnofile);
+        vec_free(ir_heap, lnofile);
         return false;
     }
-    vec_free(lnofile);
+    vec_free(ir_heap, lnofile);
     return true;
 }
 

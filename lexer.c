@@ -28,6 +28,8 @@
 #include "gmqcc.h"
 #include "lexer.h"
 
+mem_heap_t *lex_heap;
+
 /*
  * List of Keywords
  */
@@ -94,7 +96,7 @@ bool lexwarn(lex_file *lex, int warntype, const char *fmt, ...)
 #if 0
 token* token_new()
 {
-    token *tok = (token*)mem_a(sizeof(token));
+    token *tok = (token*)mem_alloc(lex_heap, sizeof(token));
     if (!tok)
         return NULL;
     memset(tok, 0, sizeof(*tok));
@@ -108,7 +110,7 @@ void token_delete(token *self)
     if (self->prev && self->prev->next == self)
         self->prev->next = self->next;
     MEM_VECTOR_CLEAR(self, value);
-    mem_d(self);
+    mem_free(lex_heap, self);
 }
 
 token* token_copy(const token *cp)
@@ -119,9 +121,9 @@ token* token_copy(const token *cp)
     /* copy the value */
     self->value_alloc = cp->value_count + 1;
     self->value_count = cp->value_count;
-    self->value = (char*)mem_a(self->value_alloc);
+    self->value = (char*)mem_alloc(lex_heap, self->value_alloc);
     if (!self->value) {
-        mem_d(self);
+        mem_free(lex_heap, self);
         return NULL;
     }
     memcpy(self->value, cp->value, cp->value_count);
@@ -194,7 +196,7 @@ lex_file* lex_open(const char *file)
         return NULL;
     }
 
-    lex = (lex_file*)mem_a(sizeof(*lex));
+    lex = (lex_file*)mem_alloc(lex_heap, sizeof(*lex));
     if (!lex) {
         fclose(in);
         lexerror(NULL, "out of memory\n");
@@ -204,13 +206,13 @@ lex_file* lex_open(const char *file)
     memset(lex, 0, sizeof(*lex));
 
     lex->file = in;
-    lex->name = util_strdup(file);
+    lex->name = util_strdup(lex_heap, file);
     lex->line = 1; /* we start counting at 1 */
 
     lex->peekpos = 0;
     lex->eof = false;
 
-    vec_push(lex_filenames, lex->name);
+    vec_push(lex_heap, lex_filenames, lex->name);
     return lex;
 }
 
@@ -218,7 +220,7 @@ lex_file* lex_open_string(const char *str, size_t len, const char *name)
 {
     lex_file *lex;
 
-    lex = (lex_file*)mem_a(sizeof(*lex));
+    lex = (lex_file*)mem_alloc(lex_heap, sizeof(*lex));
     if (!lex) {
         lexerror(NULL, "out of memory\n");
         return NULL;
@@ -231,13 +233,13 @@ lex_file* lex_open_string(const char *str, size_t len, const char *name)
     lex->open_string_length = len;
     lex->open_string_pos    = 0;
 
-    lex->name = util_strdup(name ? name : "<string-source>");
+    lex->name = util_strdup(lex_heap, name ? name : "<string-source>");
     lex->line = 1; /* we start counting at 1 */
 
     lex->peekpos = 0;
     lex->eof = false;
 
-    vec_push(lex_filenames, lex->name);
+    vec_push(lex_heap, lex_filenames, lex->name);
 
     return lex;
 }
@@ -246,19 +248,19 @@ void lex_cleanup(void)
 {
     size_t i;
     for (i = 0; i < vec_size(lex_filenames); ++i)
-        mem_d(lex_filenames[i]);
-    vec_free(lex_filenames);
+        mem_free(lex_heap, lex_filenames[i]);
+    vec_free(lex_heap, lex_filenames);
 }
 
 void lex_close(lex_file *lex)
 {
     size_t i;
     for (i = 0; i < vec_size(lex->frames); ++i)
-        mem_d(lex->frames[i].name);
-    vec_free(lex->frames);
+        mem_free(lex_heap, lex->frames[i].name);
+    vec_free(lex_heap, lex->frames);
 
     if (lex->modelname)
-        vec_free(lex->modelname);
+        vec_free(lex_heap, lex->modelname);
 
     if (lex->file)
         fclose(lex->file);
@@ -266,10 +268,10 @@ void lex_close(lex_file *lex)
     if (lex->tok)
         token_delete(lex->tok);
 #else
-    vec_free(lex->tok.value);
+    vec_free(lex_heap, lex->tok.value);
 #endif
     /* mem_d(lex->name); collected in lex_filenames */
-    mem_d(lex);
+    mem_free(lex_heap, lex);
 }
 
 static int lex_fgetc(lex_file *lex)
@@ -394,13 +396,13 @@ static bool isxdigit_only(int ch)
 /* Append a character to the token buffer */
 static void lex_tokench(lex_file *lex, int ch)
 {
-    vec_push(lex->tok.value, ch);
+    vec_push(lex_heap, lex->tok.value, ch);
 }
 
 /* Append a trailing null-byte */
 static void lex_endtoken(lex_file *lex)
 {
-    vec_push(lex->tok.value, 0);
+    vec_push(lex_heap, lex->tok.value, 0);
     vec_shrinkby(lex->tok.value, 1);
 }
 
@@ -424,8 +426,8 @@ static bool lex_try_pragma(lex_file *lex)
     }
 
     for (ch = lex_getch(lex); vec_size(pragma) < 8 && ch >= 'a' && ch <= 'z'; ch = lex_getch(lex))
-        vec_push(pragma, ch);
-    vec_push(pragma, 0);
+        vec_push(lex_heap, pragma, ch);
+    vec_push(lex_heap, pragma, 0);
 
     if (ch != ' ' || strcmp(pragma, "pragma")) {
         lex_ungetch(lex, ch);
@@ -433,8 +435,8 @@ static bool lex_try_pragma(lex_file *lex)
     }
 
     for (ch = lex_getch(lex); vec_size(command) < 32 && ch >= 'a' && ch <= 'z'; ch = lex_getch(lex))
-        vec_push(command, ch);
-    vec_push(command, 0);
+        vec_push(lex_heap, command, ch);
+    vec_push(lex_heap, command, 0);
 
     if (ch != '(') {
         lex_ungetch(lex, ch);
@@ -442,8 +444,8 @@ static bool lex_try_pragma(lex_file *lex)
     }
 
     for (ch = lex_getch(lex); vec_size(param) < 1024 && ch != ')' && ch != '\n'; ch = lex_getch(lex))
-        vec_push(param, ch);
-    vec_push(param, 0);
+        vec_push(lex_heap, param, ch);
+    vec_push(lex_heap, param, 0);
 
     if (ch != ')') {
         lex_ungetch(lex, ch);
@@ -470,8 +472,8 @@ static bool lex_try_pragma(lex_file *lex)
             goto unroll;
     }
     else if (!strcmp(command, "file")) {
-        lex->name = util_strdup(param);
-        vec_push(lex_filenames, lex->name);
+        lex->name = util_strdup(lex_heap, param);
+        vec_push(lex_heap, lex_filenames, lex->name);
     }
     else if (!strcmp(command, "line")) {
         line = strtol(param, NULL, 0)-1;
@@ -491,7 +493,7 @@ unroll:
             lex_ungetch(lex, vec_last(command));
             vec_pop(command);
         }
-        vec_free(command);
+        vec_free(lex_heap, command);
     }
     if (command) {
         vec_pop(command);
@@ -499,7 +501,7 @@ unroll:
             lex_ungetch(lex, vec_last(command));
             vec_pop(command);
         }
-        vec_free(command);
+        vec_free(lex_heap, command);
     }
     if (pragma) {
         vec_pop(pragma);
@@ -507,7 +509,7 @@ unroll:
             lex_ungetch(lex, vec_last(pragma));
             vec_pop(pragma);
         }
-        vec_free(pragma);
+        vec_free(lex_heap, pragma);
     }
     lex_ungetch(lex, '#');
 
@@ -733,9 +735,9 @@ static bool lex_finish_frames(lex_file *lex)
             continue;
 
         m.value = lex->framevalue++;
-        m.name = util_strdup(lex->tok.value);
+        m.name = util_strdup(lex_heap, lex->tok.value);
         vec_shrinkto(lex->tok.value, 0);
-        vec_push(lex->frames, m);
+        vec_push(lex_heap, lex->frames, m);
     } while (true);
 }
 
@@ -1068,7 +1070,7 @@ int lex_do(lex_file *lex)
                 m.value = lex->framevalue;
                 m.name = lex->modelname;
                 lex->modelname = NULL;
-                vec_push(lex->frames, m);
+                vec_push(lex_heap, lex->frames, m);
             }
             lex->modelname = lex->tok.value;
             lex->tok.value = NULL;
@@ -1079,8 +1081,8 @@ int lex_do(lex_file *lex)
         {
             size_t fi;
             for (fi = 0; fi < vec_size(lex->frames); ++fi)
-                mem_d(lex->frames[fi].name);
-            vec_free(lex->frames);
+                mem_free(lex_heap, lex->frames[fi].name);
+            vec_free(lex_heap, lex->frames);
             /* skip line (fteqcc does it too) */
             ch = lex_getch(lex);
             while (ch != EOF && ch != '\n')

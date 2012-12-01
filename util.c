@@ -24,25 +24,20 @@
 #include <stdarg.h>
 #include <errno.h>
 #include "gmqcc.h"
-
-/* 
- * TODD: see extern mem_heap_t *util_heap from gmqcc.h
- *       for TODO.
- */
-mem_heap_t *util_heap = NULL;
+mem_heap_t *util_heap;
 
 /*
  * Some string utility functions, because strdup uses malloc, and we want
  * to track all memory (without replacing malloc).
  */
-char *util_strdup(const char *s) {
+char *util_strdup(mem_heap_t *heap, const char *s) {
     size_t  len = 0;
     char   *ptr = NULL;
 
     if (!s)
         return NULL;
 
-    if ((len = strlen(s)) && (ptr = mem_a(len+1))) {
+    if ((len = strlen(s)) && (ptr = mem_alloc(heap, len+1))) {
         memcpy(ptr, s, len);
         ptr[len] = '\0';
     }
@@ -69,22 +64,6 @@ char *util_strrq(const char *s) {
     }
     *dst = '\0';
     return dst;
-}
-
-/*
- * Chops a substring from an existing string by creating a
- * copy of it and null terminating it at the required position.
- */
-char *util_strchp(const char *s, const char *e) {
-    const char *c = NULL;
-    if (!s || !e)
-        return NULL;
-
-    c = s;
-    while (c != e)
-        c++;
-
-    return util_strdup(s);
 }
 
 /*
@@ -313,7 +292,7 @@ int util_getline(char **lineptr, size_t *n, FILE *stream) {
     if (!lineptr || !n || !stream)
         return -1;
     if (!*lineptr) {
-        if (!(*lineptr = (char*)mem_a((*n=64))))
+        if (!(*lineptr = (char*)mem_alloc(util_heap, (*n=64))))
             return -1;
     }
 
@@ -326,7 +305,7 @@ int util_getline(char **lineptr, size_t *n, FILE *stream) {
         if (chr < 2) {
             *n += (*n > 16) ? *n : 64;
             chr = *n + *lineptr - pos;
-            if (!(*lineptr = (char*)mem_r(*lineptr,*n)))
+            if (!(*lineptr = (char*)mem_realloc(util_heap, *lineptr, *n)))
                 return -1;
             pos = *n - chr + *lineptr;
         }
@@ -378,9 +357,9 @@ FILE *util_fopen(const char *filename, const char *mode)
 #endif
 }
 
-void _util_vec_grow(void **a, size_t i, size_t s) {
+void _util_vec_grow(mem_heap_t *heap, void **a, size_t i, size_t s) {
     size_t m = *a ? 2*_vec_beg(*a)+i : i+1;
-    void  *p = mem_r((*a ? _vec_raw(*a) : NULL), s * m + sizeof(size_t)*2);
+    void  *p = mem_realloc(heap, (*a ? _vec_raw(*a) : NULL), s * m + sizeof(size_t)*2);
     if (!*a)
         ((size_t*)p)[1] = 0;
     *a = (void*)((size_t*)p + 2);
@@ -499,11 +478,11 @@ size_t util_hthash(hash_table_t *ht, const char *key) {
 
 hash_node_t *_util_htnewpair(const char *key, void *value) {
     hash_node_t *node;
-    if (!(node = mem_a(sizeof(hash_node_t))))
+    if (!(node = mem_alloc(util_heap, sizeof(hash_node_t))))
         return NULL;
 
-    if (!(node->key = util_strdup(key))) {
-        mem_d(node);
+    if (!(node->key = util_strdup(util_heap, key))) {
+        mem_free(util_heap, node);
         return NULL;
     }
 
@@ -525,11 +504,11 @@ hash_table_t *util_htnew(size_t size) {
     if (size < 1)
         return NULL;
 
-    if (!(hashtable = mem_a(sizeof(hash_table_t))))
+    if (!(hashtable = mem_alloc(util_heap, sizeof(hash_table_t))))
         return NULL;
 
-    if (!(hashtable->table = mem_a(sizeof(hash_node_t*) * size))) {
-        mem_d(hashtable);
+    if (!(hashtable->table = mem_alloc(util_heap, sizeof(hash_node_t*) * size))) {
+        mem_free(util_heap, hashtable);
         return NULL;
     }
 
@@ -601,13 +580,13 @@ void util_htdel(hash_table_t *ht) {
         /* free in list */
         while (n) {
             if (n->key)
-                mem_d(n->key);
+                mem_free(util_heap, n->key);
             p = n;
             n = n->next;
-            mem_d(p);
+            mem_free(util_heap, p);
         }
     }
     /* free table */
-    mem_d(ht->table);
-    mem_d(ht);
+    mem_free(util_heap, ht->table);
+    mem_free(util_heap, ht);
 }

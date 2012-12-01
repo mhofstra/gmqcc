@@ -24,7 +24,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <dirent.h>
-
+mem_heap_t *test_heap;
 bool  opts_memchk = false;
 bool  opts_debug  = false;
 char *task_bins[] = {
@@ -67,7 +67,7 @@ FILE ** task_popen(const char *command, const char *mode) {
     int     errhandle [2];
     int     trypipe;
 
-    popen_t *data = mem_a(sizeof(popen_t));
+    popen_t *data = mem_alloc(test_heap, sizeof(popen_t));
 
     /*
      * Parse the command now into a list for execv, this is a pain
@@ -80,12 +80,12 @@ FILE ** task_popen(const char *command, const char *mode) {
         while (*line != '\0') {
             while (*line == ' ' || *line == '\t' || *line == '\n')
                 *line++ = '\0';
-            vec_push(argv, line);
+            vec_push(test_heap, argv, line);
 
             while (*line != '\0' && *line != ' ' &&
                    *line != '\t' && *line != '\n') line++;
         }
-        vec_push(argv, '\0');
+        vec_push(test_heap, argv, '\0');
     }
 
 
@@ -108,7 +108,7 @@ FILE ** task_popen(const char *command, const char *mode) {
 
         /* sigh */
         if (argv)
-            vec_free(argv);
+            vec_free(test_heap, argv);
         return data->handles;
     } else if (data->pid == 0) {
         /* child */
@@ -129,7 +129,7 @@ FILE ** task_popen(const char *command, const char *mode) {
     }
 
     if (argv)
-        vec_free(argv);
+        vec_free(test_heap, argv);
     return data->handles;
 
 task_popen_error_3: close(errhandle[0]), close(errhandle[1]);
@@ -138,7 +138,7 @@ task_popen_error_1: close(inhandle [0]), close(inhandle [1]);
 task_popen_error_0:
 
     if (argv)
-        vec_free(argv);
+        vec_free(test_heap, argv);
     return NULL;
 }
 
@@ -152,7 +152,7 @@ int task_pclose(FILE **handles) {
 
     waitpid(data->pid, &status, 0);
 
-    mem_d(data);
+    mem_free(test_heap, data);
 
     return status;
 }
@@ -305,7 +305,7 @@ bool task_template_generate(task_template_t *template, char tag, const char *fil
      * Now allocate and set the actual value for the specific tag. Which
      * was properly selected and can be accessed with *destval.
      */
-    *destval = util_strdup(value);
+    *destval = util_strdup(test_heap, value);
 
     return true;
 }
@@ -336,7 +336,7 @@ bool task_template_parse(const char *file, task_template_t *template, FILE *fp) 
                     con_printmsg(LVL_ERROR, file, line, "template parse error",
                         "invalid character `/`, perhaps you meant `//` ?");
 
-                    mem_d(back);
+                    mem_free(test_heap, back);
                     return false;
                 }
             case '#':
@@ -402,7 +402,7 @@ bool task_template_parse(const char *file, task_template_t *template, FILE *fp) 
                  */
                 *strrchr(value, '\n')='\0';
 
-                vec_push(template->comparematch, util_strdup(value));
+                vec_push(test_heap, template->comparematch, util_strdup(test_heap, value));
 
                 break;
             }
@@ -417,16 +417,16 @@ bool task_template_parse(const char *file, task_template_t *template, FILE *fp) 
 
         /* update line and free old sata */
         line++;
-        mem_d(back);
+        mem_free(test_heap, back);
         back = NULL;
     }
     if (back)
-        mem_d(back);
+        mem_free(test_heap, back);
     return true;
 
 failure:
     if (back)
-        mem_d (back);
+        mem_free(test_heap, back);
     return false;
 }
 
@@ -459,7 +459,7 @@ task_template_t *task_template_compile(const char *file, const char *dir) {
     snprintf(fullfile,    sizeof(fullfile), "%s/%s", dir, file);
 
     tempfile = fopen(fullfile, "r");
-    template = mem_a(sizeof(task_template_t));
+    template = mem_alloc(test_heap, sizeof(task_template_t));
     task_template_nullify(template);
 
     /*
@@ -515,7 +515,7 @@ task_template_t *task_template_compile(const char *file, const char *dir) {
     } else if (!strcmp(template->proceduretype, "-execute")) {
         if (!template->executeflags) {
             /* default to $null */
-            template->executeflags = util_strdup("$null");
+            template->executeflags = util_strdup(test_heap, "$null");
         }
         if (!template->comparematch) {
             con_err("template compile error: %s missing `M:` tag (use `$null` for exclude)\n", file);
@@ -537,7 +537,7 @@ failure:
      */
     if (tempfile)
         fclose(tempfile);
-    mem_d (template);
+    mem_free(test_heap, template);
 
     return NULL;
 }
@@ -546,13 +546,13 @@ void task_template_destroy(task_template_t **template) {
     if (!template)
         return;
 
-    if ((*template)->description)    mem_d((*template)->description);
-    if ((*template)->failuremessage) mem_d((*template)->failuremessage);
-    if ((*template)->successmessage) mem_d((*template)->successmessage);
-    if ((*template)->proceduretype)  mem_d((*template)->proceduretype);
-    if ((*template)->compileflags)   mem_d((*template)->compileflags);
-    if ((*template)->executeflags)   mem_d((*template)->executeflags);
-    if ((*template)->sourcefile)     mem_d((*template)->sourcefile);
+    if ((*template)->description)    mem_free(test_heap, (*template)->description);
+    if ((*template)->failuremessage) mem_free(test_heap, (*template)->failuremessage);
+    if ((*template)->successmessage) mem_free(test_heap, (*template)->successmessage);
+    if ((*template)->proceduretype)  mem_free(test_heap, (*template)->proceduretype);
+    if ((*template)->compileflags)   mem_free(test_heap, (*template)->compileflags);
+    if ((*template)->executeflags)   mem_free(test_heap, (*template)->executeflags);
+    if ((*template)->sourcefile)     mem_free(test_heap, (*template)->sourcefile);
 
     /*
      * Delete all allocated string for task template then destroy the
@@ -561,16 +561,16 @@ void task_template_destroy(task_template_t **template) {
     {
         size_t i = 0;
         for (; i < vec_size((*template)->comparematch); i++)
-            mem_d((*template)->comparematch[i]);
+            mem_free(test_heap, (*template)->comparematch[i]);
 
-        vec_free((*template)->comparematch);
+        vec_free(test_heap, (*template)->comparematch);
     }
 
     /*
      * Nullify all the template members otherwise NULL comparision
      * checks will fail if template pointer is reused.
      */
-    mem_d(*template);
+    mem_free(test_heap, *template);
 }
 
 /*
@@ -671,7 +671,7 @@ bool task_propagate(const char *curdir) {
              */
             memset  (buf,0,sizeof(buf));
             snprintf(buf,  sizeof(buf), "%s.stdout", template->tempfilename);
-            task.stdoutlogfile = util_strdup(buf);
+            task.stdoutlogfile = util_strdup(test_heap, buf);
             if (!(task.stdoutlog     = fopen(buf, "w"))) {
                 con_err("error opening %s for stdout\n", buf);
                 continue;
@@ -679,13 +679,13 @@ bool task_propagate(const char *curdir) {
 
             memset  (buf,0,sizeof(buf));
             snprintf(buf,  sizeof(buf), "%s.stderr", template->tempfilename);
-            task.stderrlogfile = util_strdup(buf);
+            task.stderrlogfile = util_strdup(test_heap, buf);
             if (!(task.stderrlog     = fopen(buf, "w"))) {
                 con_err("error opening %s for stderr\n", buf);
                 continue;
             }
 
-            vec_push(task_tasks, task);
+            vec_push(test_heap, task_tasks, task);
         }
     }
 
@@ -784,12 +784,12 @@ void task_destroy(const char *curdir) {
         }
 
         /* free util_strdup data for log files */
-        mem_d(task_tasks[i].stdoutlogfile);
-        mem_d(task_tasks[i].stderrlogfile);
+        mem_free(test_heap, task_tasks[i].stdoutlogfile);
+        mem_free(test_heap, task_tasks[i].stderrlogfile);
 
         task_template_destroy(&task_tasks[i].template);
     }
-    vec_free(task_tasks);
+    vec_free(test_heap, task_tasks);
 
     /*
      * Cleanup outside stuff like temporary files.
@@ -867,7 +867,7 @@ bool task_execute(task_template_t *template) {
              */
             success = !!!(strcmp(data, template->comparematch[compare++]));
         }
-        mem_d(data);
+        mem_free(test_heap, data);
         data = NULL;
     }
     pclose(execute);
@@ -954,7 +954,7 @@ void task_schedualize() {
             task_tasks[i].template->successmessage  : "unknown"
         );
     }
-    mem_d(data);
+    mem_free(test_heap, data);
 }
 
 /*
@@ -1021,17 +1021,14 @@ static bool parsecmd(const char *optname, int *argc_, char ***argv_, char **out,
     return true;
 }
 
+extern mem_heap_t *util_heap;
 int main(int argc, char **argv) {
     char         *redirout = (char*)stdout;
     char         *redirerr = (char*)stderr;
 
     con_init();
-<<<<<<< HEAD
-    util_heap = mem_heap_add("utility heap", 33554432, __FILE__, __LINE__);
-    
-=======
-
->>>>>>> master
+    util_heap = mem_new("util");
+    test_heap = mem_new("testsuite");
     /*
      * Command line option parsing commences now We only need to support
      * a few things in the test suite.
@@ -1067,7 +1064,7 @@ int main(int argc, char **argv) {
     }
     con_change(redirout, redirerr);
     test_perform("tests");
-    mem_dump();
-    mem_destroyall(__FILE__, __LINE__);
+    mem_dump   ();
+    mem_destroy();
     return 0;
 }

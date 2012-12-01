@@ -195,15 +195,56 @@ typedef char uintptr_size_is_correct[sizeof(intptr_t) == sizeof(int*)?1:-1];
 typedef char intptr_size_is_correct [sizeof(uintptr_t)== sizeof(int*)?1:-1];
 
 /*===================================================================*/
+/*============================ mem.c ================================*/
+/*===================================================================*/
+typedef struct mem_info_t {
+    const char        *file;
+    const char        *func;
+    size_t             line;
+    size_t             size;
+    struct mem_info_t *next;
+    struct mem_info_t *prev;
+    void              *heap; /* Used to prevent mismatched frees */
+} mem_info_t;
+
+typedef struct {
+    const char *name;
+    const char *file;
+    const char *func;
+    size_t      line;
+    mem_info_t *info;
+
+    uint64_t    allocated;
+    uint64_t    deallocated;
+    uint64_t    allocations;
+    uint64_t    deallocations;
+} mem_heap_t;
+
+void       *_mem_realloc(mem_heap_t *, void *data, size_t size, const char *, const char *, size_t);
+void       *_mem_alloc  (mem_heap_t *,             size_t size, const char *, const char *, size_t);
+void        _mem_free   (mem_heap_t *, void *data,              const char *, const char *, size_t);
+void        _mem_freeall(mem_heap_t *,                          const char *, const char *, size_t);
+mem_heap_t *_mem_new    (const char *,                          const char *, const char *, size_t);
+
+/* exposed interface */
+void    mem_dump();
+void    mem_destroy();
+size_t  mem_size(void *);
+#define mem_new(X)         _mem_new    ((X),           __FILE__, __FUNCTION__, __LINE__)
+#define mem_alloc(X,Y)     _mem_alloc  ((X), (Y),      __FILE__, __FUNCTION__, __LINE__)
+#define mem_free(X,Y)      _mem_free   ((X), (Y),      __FILE__, __FUNCTION__, __LINE__)
+#define mem_realloc(X,Y,Z) _mem_realloc((X), (Y), (Z), __FILE__, __FUNCTION__, __LINE__)
+#define mem_freeall(X)     _mem_freeall((X),           __FILE__, __FUNCTION__, __LINE__)
+
+/*===================================================================*/
 /*=========================== util.c ================================*/
 /*===================================================================*/
-FILE *util_fopen(const char *filename, const char *mode);
-
+FILE *util_fopen         (const char *, const char *);
 bool  util_filexists     (const char *);
 bool  util_strupper      (const char *);
 bool  util_strdigit      (const char *);
 bool  util_strncmpexact  (const char *, const char *, size_t);
-char *util_strdup        (const char *);
+char *util_strdup        (mem_heap_t *, const char *);
 char *util_strrq         (const char *);
 char *util_strrnl        (const char *);
 char *util_strsws        (const char *);
@@ -218,7 +259,6 @@ size_t util_strtononcmd (const char *, char *, size_t);
 uint16_t util_crc16(uint16_t crc, const char *data, size_t len);
 uint32_t util_crc32(uint32_t crc, const char *data, size_t len);
 
-
 /*
  * TODO: make these safer to use.  Currently this only works on
  * x86 and x86_64, some systems will likely not like this. Such
@@ -227,22 +267,23 @@ uint32_t util_crc32(uint32_t crc, const char *data, size_t len);
 #define FLT2INT(Y) *((int32_t*)&(Y))
 #define INT2FLT(Y) *((float  *)&(Y))
 
+/* TODO: cleanup */
 /* New flexible vector implementation from Dale */
 #define _vec_raw(A) (((size_t*)(void*)(A)) - 2)
 #define _vec_beg(A) (_vec_raw(A)[0])
 #define _vec_end(A) (_vec_raw(A)[1])
-#define _vec_needsgrow(A,N) ((!(A)) || (_vec_end(A) + (N) >= _vec_beg(A)))
-#define _vec_mightgrow(A,N) (_vec_needsgrow((A), (N)) ? (void)_vec_forcegrow((A),(N)) : (void)0)
-#define _vec_forcegrow(A,N) _util_vec_grow(((void**)&(A)), (N), sizeof(*(A)))
+#define _vec_needsgrow(A,N)  ((!(A)) || (_vec_end(A) + (N) >= _vec_beg(A)))
+#define _vec_mightgrow(H,A,N) (_vec_needsgrow((A), (N)) ? (void)_vec_forcegrow((H),(A),(N)) : (void)0)
+#define _vec_forcegrow(H,A,N) _util_vec_grow((H), ((void**)&(A)), (N), sizeof(*(A)))
 #define _vec_remove(A,S,I,N) (memmove((char*)(A)+(I)*(S),(char*)(A)+((I)+(N))*(S),(S)*(_vec_end(A)-(I)-(N))), _vec_end(A)-=(N))
-void _util_vec_grow(void **a, size_t i, size_t s);
+void _util_vec_grow(mem_heap_t *, void **a, size_t i, size_t s);
 /* exposed interface */
-#define vec_free(A)          ((A) ? (mem_d((void*)_vec_raw(A)), (A) = NULL) : 0)
-#define vec_push(A,V)        (_vec_mightgrow((A),1), (A)[_vec_end(A)++] = (V))
+#define vec_free(H,A)        ((A) ? (mem_free((H), (void*)_vec_raw(A)), (A) = NULL) : 0)
+#define vec_push(H,A,V)      (_vec_mightgrow((H),(A),1), (A)[_vec_end(A)++] = (V))
 #define vec_size(A)          ((A) ? _vec_end(A) : 0)
-#define vec_add(A,N)         (_vec_mightgrow((A),(N)), _vec_end(A)+=(N), &(A)[_vec_end(A)-(N)])
+#define vec_add(H,A,N)       (_vec_mightgrow((H),(A),(N)), _vec_end(A)+=(N), &(A)[_vec_end(A)-(N)])
 #define vec_last(A)          ((A)[_vec_end(A)-1])
-#define vec_append(A,N,S)    memcpy(vec_add((A), (N)), (S), N * sizeof(*(S)))
+#define vec_append(H,A,N,S)   memcpy(vec_add((H), (A), (N)), (S), N * sizeof(*(S)))
 #define vec_remove(A,I,N)    _vec_remove((A), sizeof(*(A)), (I), (N))
 #define vec_pop(A)           (_vec_end(A)-=1)
 /* these are supposed to NOT reallocate */

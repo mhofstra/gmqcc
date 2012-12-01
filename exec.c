@@ -26,8 +26,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdarg.h>
-
 #include "gmqcc.h"
+mem_heap_t *exec_heap;
 
 static void loaderror(const char *fmt, ...)
 {
@@ -73,7 +73,7 @@ qc_program* prog_load(const char *filename)
         return NULL;
     }
 
-    prog = (qc_program*)mem_a(sizeof(qc_program));
+    prog = (qc_program*)mem_alloc(exec_heap, sizeof(qc_program));
     if (!prog) {
         fclose(file);
         printf("failed to allocate program data\n");
@@ -84,7 +84,7 @@ qc_program* prog_load(const char *filename)
     prog->entityfields = header.entfield;
     prog->crc16 = header.crc16;
 
-    prog->filename = util_strdup(filename);
+    prog->filename = util_strdup(exec_heap, filename);
     if (!prog->filename) {
         loaderror("failed to store program name");
         goto error;
@@ -95,7 +95,7 @@ qc_program* prog_load(const char *filename)
         loaderror("seek failed");                                      \
         goto error;                                                    \
     }                                                                  \
-    if (fread(vec_add(prog->progvar, header.hdrvar.length + reserved), \
+    if (fread(vec_add(exec_heap, prog->progvar, header.hdrvar.length + reserved), \
               sizeof(*prog->progvar),                                  \
               header.hdrvar.length, file)                              \
         != header.hdrvar.length)                                       \
@@ -116,50 +116,50 @@ qc_program* prog_load(const char *filename)
     fclose(file);
 
     /* profile counters */
-    memset(vec_add(prog->profile, vec_size(prog->code)), 0, sizeof(prog->profile[0]) * vec_size(prog->code));
+    memset(vec_add(exec_heap, prog->profile, vec_size(prog->code)), 0, sizeof(prog->profile[0]) * vec_size(prog->code));
 
     /* Add tempstring area */
     prog->tempstring_start = vec_size(prog->strings);
     prog->tempstring_at    = vec_size(prog->strings);
-    memset(vec_add(prog->strings, 16*1024), 0, 16*1024);
+    memset(vec_add(exec_heap, prog->strings, 16*1024), 0, 16*1024);
 
     /* spawn the world entity */
-    vec_push(prog->entitypool, true);
-    memset(vec_add(prog->entitydata, prog->entityfields), 0, prog->entityfields * sizeof(prog->entitydata[0]));
+    vec_push(exec_heap, prog->entitypool, true);
+    memset(vec_add(exec_heap, prog->entitydata, prog->entityfields), 0, prog->entityfields * sizeof(prog->entitydata[0]));
     prog->entities = 1;
 
     return prog;
 
 error:
     if (prog->filename)
-        mem_d(prog->filename);
-    vec_free(prog->code);
-    vec_free(prog->defs);
-    vec_free(prog->fields);
-    vec_free(prog->functions);
-    vec_free(prog->strings);
-    vec_free(prog->globals);
-    vec_free(prog->entitydata);
-    vec_free(prog->entitypool);
-    mem_d(prog);
+        mem_free(exec_heap, prog->filename);
+    vec_free(exec_heap, prog->code);
+    vec_free(exec_heap, prog->defs);
+    vec_free(exec_heap, prog->fields);
+    vec_free(exec_heap, prog->functions);
+    vec_free(exec_heap, prog->strings);
+    vec_free(exec_heap, prog->globals);
+    vec_free(exec_heap, prog->entitydata);
+    vec_free(exec_heap, prog->entitypool);
+    mem_free(exec_heap, prog);
     return NULL;
 }
 
 void prog_delete(qc_program *prog)
 {
-    if (prog->filename) mem_d(prog->filename);
-    vec_free(prog->code);
-    vec_free(prog->defs);
-    vec_free(prog->fields);
-    vec_free(prog->functions);
-    vec_free(prog->strings);
-    vec_free(prog->globals);
-    vec_free(prog->entitydata);
-    vec_free(prog->entitypool);
-    vec_free(prog->localstack);
-    vec_free(prog->stack);
-    vec_free(prog->profile);
-    mem_d(prog);
+    if (prog->filename) mem_free(exec_heap, prog->filename);
+    vec_free(exec_heap, prog->code);
+    vec_free(exec_heap, prog->defs);
+    vec_free(exec_heap, prog->fields);
+    vec_free(exec_heap, prog->functions);
+    vec_free(exec_heap, prog->strings);
+    vec_free(exec_heap, prog->globals);
+    vec_free(exec_heap, prog->entitydata);
+    vec_free(exec_heap, prog->entitypool);
+    vec_free(exec_heap, prog->localstack);
+    vec_free(exec_heap, prog->stack);
+    vec_free(exec_heap, prog->profile);
+    mem_free(exec_heap, prog);
 }
 
 /***********************************************************************
@@ -214,9 +214,9 @@ qcint prog_spawn_entity(qc_program *prog)
             return e;
         }
     }
-    vec_push(prog->entitypool, true);
+    vec_push(exec_heap, prog->entitypool, true);
     prog->entities++;
-    data = (char*)vec_add(prog->entitydata, prog->entityfields);
+    data = (char*)vec_add(exec_heap, prog->entitydata, prog->entityfields);
     memset(data, 0, prog->entityfields * sizeof(qcint));
     return e;
 }
@@ -258,7 +258,7 @@ qcint prog_tempstring(qc_program *prog, const char *_str)
     /* when it doesn't fit, reallocate */
     if (at + len >= vec_size(prog->strings))
     {
-        (void)vec_add(prog->strings, len+1);
+        (void)vec_add(exec_heap, prog->strings, len+1);
         memcpy(prog->strings + at, str, len+1);
         return at;
     }
@@ -470,7 +470,7 @@ static qcint prog_enterfunction(qc_program *prog, prog_section_function *func)
     st.function = func;
 
     if (prog->xflags & VMXF_TRACE) {
-        vec_push(prog->function_stack, prog_getstring(prog, func->name));
+        vec_push(exec_heap, prog->function_stack, prog_getstring(prog, func->name));
     }
 
 #ifdef QCVM_BACKUP_STRATEGY_CALLER_VARS
@@ -487,7 +487,7 @@ static qcint prog_enterfunction(qc_program *prog, prog_section_function *func)
 #else
     {
         qcint *globals = prog->globals + func->firstlocal;
-        vec_append(prog->localstack, func->locals, globals);
+        vec_append(exec_heap, prog->localstack, func->locals, globals);
     }
 #endif
 
@@ -502,7 +502,7 @@ static qcint prog_enterfunction(qc_program *prog, prog_section_function *func)
         }
     }
 
-    vec_push(prog->stack, st);
+    vec_push(exec_heap, prog->stack, st);
 
     return func->entry;
 }
@@ -587,8 +587,8 @@ bool prog_exec(qc_program *prog, prog_section_function *func, size_t flags, long
 
 cleanup:
     prog->xflags = oldxflags;
-    vec_free(prog->localstack);
-    vec_free(prog->stack);
+    vec_free(exec_heap, prog->localstack);
+    vec_free(exec_heap, prog->stack);
     if (prog->vmerror)
         return false;
     return true;
@@ -803,8 +803,9 @@ int main(int argc, char **argv)
     bool        opts_disasm      = false;
     bool        opts_info  = false;
 
-    arg0 = argv[0];
-    util_heap = mem_heap_add("utility heap", 33554432, __FILE__, __LINE__);
+    con_init();
+    arg0      = argv[0];
+    exec_heap = mem_new("exec");
 
     if (argc < 2)
         usage();
@@ -863,7 +864,7 @@ int main(int argc, char **argv)
                 usage();
             p.value = argv[1];
 
-            vec_push(main_params, p);
+            vec_push(exec_heap, main_params, p);
             --argc;
             ++argv;
         }
@@ -943,7 +944,7 @@ int main(int argc, char **argv)
 
     prog_delete(prog);
     mem_dump();
-    mem_destroyall(__FILE__, __LINE__);
+    mem_destroy();
     return 0;
 }
 

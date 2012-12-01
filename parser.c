@@ -34,6 +34,8 @@
 #define PARSER_HT_SIZE    1024
 #define TYPEDEF_HT_SIZE   16
 
+mem_heap_t *parser_heap;
+
 typedef struct {
     lex_file *lex;
     int      tok;
@@ -221,7 +223,7 @@ static ast_value* parser_const_float(parser_t *parser, double d)
     out->cvq      = CV_CONST;
     out->hasvalue = true;
     out->constval.vfloat = d;
-    vec_push(parser->imm_float, out);
+    vec_push(parser_heap, parser->imm_float, out);
     return out;
 }
 
@@ -243,11 +245,11 @@ static char *parser_strdup(const char *str)
 {
     if (str && !*str) {
         /* actually dup empty strings */
-        char *out = mem_a(1);
+        char *out = mem_alloc(parser_heap,1);
         *out = 0;
         return out;
     }
-    return util_strdup(str);
+    return util_strdup(parser_heap, str);
 }
 
 static ast_value* parser_const_string(parser_t *parser, const char *str, bool dotranslate)
@@ -267,7 +269,7 @@ static ast_value* parser_const_string(parser_t *parser, const char *str, bool do
     out->cvq      = CV_CONST;
     out->hasvalue = true;
     out->constval.vstring = parser_strdup(str);
-    vec_push(parser->imm_string, out);
+    vec_push(parser_heap, parser->imm_string, out);
     return out;
 }
 
@@ -283,7 +285,7 @@ static ast_value* parser_const_vector(parser_t *parser, vector v)
     out->cvq      = CV_CONST;
     out->hasvalue = true;
     out->constval.vvec = v;
-    vec_push(parser->imm_vector, out);
+    vec_push(parser_heap, parser->imm_vector, out);
     return out;
 }
 
@@ -603,7 +605,7 @@ static bool parser_sy_pop(parser_t *parser, shunt *sy)
             if (!ast_block_set_type(blocks[0], exprs[1]))
                 return false;
 
-            vec_push(sy->out, syblock(ctx, blocks[0]));
+            vec_push(parser_heap,sy->out, syblock(ctx, blocks[0]));
             return true;
 
         case opid2('+','P'):
@@ -1160,7 +1162,7 @@ static bool parser_sy_pop(parser_t *parser, shunt *sy)
     }
 
     DEBUGSHUNTDO(con_out("applied %s\n", op->op));
-    vec_push(sy->out, syexp(ctx, out));
+    vec_push(parser_heap,sy->out, syexp(ctx, out));
     return true;
 }
 
@@ -1206,7 +1208,7 @@ static bool parser_close_call(parser_t *parser, shunt *sy)
         if (!params) {
             /* 1 param */
             paramcount = 1;
-            vec_push(call->params, sy->out[vec_size(sy->out)].out);
+            vec_push(parser_heap,call->params, sy->out[vec_size(sy->out)].out);
         } else {
             paramcount = vec_size(params->exprs);
             call->params = params->exprs;
@@ -1383,7 +1385,7 @@ static ast_expression* parse_expression_leave(parser_t *parser, bool stopatcomma
             wantop = true;
             if (!val)
                 return false;
-            vec_push(sy.out, syexp(parser_ctx(parser), (ast_expression*)val));
+            vec_push(parser_heap,sy.out, syexp(parser_ctx(parser), (ast_expression*)val));
             DEBUGSHUNTDO(con_out("push string\n"));
 
             if (!parser_next(parser) || parser->tok != ')') {
@@ -1436,7 +1438,7 @@ static ast_expression* parse_expression_leave(parser_t *parser, bool stopatcomma
                 if (ast_istype(mem->owner, ast_value))
                     ((ast_value*)(mem->owner))->uses++;
             }
-            vec_push(sy.out, syexp(parser_ctx(parser), var));
+            vec_push(parser_heap,sy.out, syexp(parser_ctx(parser), var));
             DEBUGSHUNTDO(con_out("push %s\n", parser_tokval(parser)));
         }
         else if (parser->tok == TOKEN_FLOATCONST) {
@@ -1449,7 +1451,7 @@ static ast_expression* parse_expression_leave(parser_t *parser, bool stopatcomma
             val = parser_const_float(parser, (parser_token(parser)->constval.f));
             if (!val)
                 return false;
-            vec_push(sy.out, syexp(parser_ctx(parser), (ast_expression*)val));
+            vec_push(parser_heap,sy.out, syexp(parser_ctx(parser), (ast_expression*)val));
             DEBUGSHUNTDO(con_out("push %g\n", parser_token(parser)->constval.f));
         }
         else if (parser->tok == TOKEN_INTCONST || parser->tok == TOKEN_CHARCONST) {
@@ -1462,7 +1464,7 @@ static ast_expression* parse_expression_leave(parser_t *parser, bool stopatcomma
             val = parser_const_float(parser, (double)(parser_token(parser)->constval.i));
             if (!val)
                 return false;
-            vec_push(sy.out, syexp(parser_ctx(parser), (ast_expression*)val));
+            vec_push(parser_heap,sy.out, syexp(parser_ctx(parser), (ast_expression*)val));
             DEBUGSHUNTDO(con_out("push %i\n", parser_token(parser)->constval.i));
         }
         else if (parser->tok == TOKEN_STRINGCONST) {
@@ -1475,7 +1477,7 @@ static ast_expression* parse_expression_leave(parser_t *parser, bool stopatcomma
             val = parser_const_string(parser, parser_tokval(parser), false);
             if (!val)
                 return false;
-            vec_push(sy.out, syexp(parser_ctx(parser), (ast_expression*)val));
+            vec_push(parser_heap,sy.out, syexp(parser_ctx(parser), (ast_expression*)val));
             DEBUGSHUNTDO(con_out("push string\n"));
         }
         else if (parser->tok == TOKEN_VECTORCONST) {
@@ -1488,7 +1490,7 @@ static ast_expression* parse_expression_leave(parser_t *parser, bool stopatcomma
             val = parser_const_vector(parser, parser_token(parser)->constval.v);
             if (!val)
                 return false;
-            vec_push(sy.out, syexp(parser_ctx(parser), (ast_expression*)val));
+            vec_push(parser_heap,sy.out, syexp(parser_ctx(parser), (ast_expression*)val));
             DEBUGSHUNTDO(con_out("push '%g %g %g'\n",
                                 parser_token(parser)->constval.v.x,
                                 parser_token(parser)->constval.v.y,
@@ -1613,10 +1615,10 @@ static ast_expression* parse_expression_leave(parser_t *parser, bool stopatcomma
                     DEBUGSHUNTDO(con_out("push [op] (\n"));
                     ++parens;
                     /* we expected an operator, this is the function-call operator */
-                    vec_push(sy.ops, syparen(parser_ctx(parser), SY_PAREN_FUNC, sycount-1));
+                    vec_push(parser_heap,sy.ops, syparen(parser_ctx(parser), SY_PAREN_FUNC, sycount-1));
                 } else {
                     ++parens;
-                    vec_push(sy.ops, syparen(parser_ctx(parser), SY_PAREN_EXPR, 0));
+                    vec_push(parser_heap,sy.ops, syparen(parser_ctx(parser), SY_PAREN_EXPR, 0));
                     DEBUGSHUNTDO(con_out("push [nop] (\n"));
                 }
                 wantop = false;
@@ -1627,24 +1629,24 @@ static ast_expression* parse_expression_leave(parser_t *parser, bool stopatcomma
                 }
                 ++parens;
                 /* push both the operator and the paren, this makes life easier */
-                vec_push(sy.ops, syop(parser_ctx(parser), op));
-                vec_push(sy.ops, syparen(parser_ctx(parser), SY_PAREN_INDEX, 0));
+                vec_push(parser_heap,sy.ops, syop(parser_ctx(parser), op));
+                vec_push(parser_heap,sy.ops, syparen(parser_ctx(parser), SY_PAREN_INDEX, 0));
                 wantop = false;
             } else if (op->id == opid2('?',':')) {
                 wantop = false;
-                vec_push(sy.ops, syop(parser_ctx(parser), op));
-                vec_push(sy.ops, syparen(parser_ctx(parser), SY_PAREN_TERNARY, 0));
+                vec_push(parser_heap,sy.ops, syop(parser_ctx(parser), op));
+                vec_push(parser_heap,sy.ops, syparen(parser_ctx(parser), SY_PAREN_TERNARY, 0));
                 wantop = false;
                 --ternaries;
             } else if (op->id == opid2(':','?')) {
                 if (!parser_close_paren(parser, &sy, false))
                     goto onerr;
-                vec_push(sy.ops, syop(parser_ctx(parser), op));
+                vec_push(parser_heap,sy.ops, syop(parser_ctx(parser), op));
                 wantop = false;
                 ++ternaries;
             } else {
                 DEBUGSHUNTDO(con_out("push operator %s\n", op->op));
-                vec_push(sy.ops, syop(parser_ctx(parser), op));
+                vec_push(parser_heap,sy.ops, syop(parser_ctx(parser), op));
                 wantop = !!(op->flags & OP_SUFFIX);
             }
         }
@@ -1669,15 +1671,15 @@ static ast_expression* parse_expression_leave(parser_t *parser, bool stopatcomma
         expr = NULL;
     } else
         expr = sy.out[0].out;
-    vec_free(sy.out);
-    vec_free(sy.ops);
+    vec_free(parser_heap,sy.out);
+    vec_free(parser_heap,sy.ops);
     DEBUGSHUNTDO(con_out("shunt done\n"));
     return expr;
 
 onerr:
     parser->lex->flags.noops = true;
-    vec_free(sy.out);
-    vec_free(sy.ops);
+    vec_free(parser_heap,sy.out);
+    vec_free(parser_heap,sy.ops);
     return NULL;
 }
 
@@ -1695,11 +1697,11 @@ static ast_expression* parse_expression(parser_t *parser, bool stopatcomma)
 
 static void parser_enterblock(parser_t *parser)
 {
-    vec_push(parser->variables, util_htnew(PARSER_HT_SIZE));
-    vec_push(parser->_blocklocals, vec_size(parser->_locals));
-    vec_push(parser->typedefs, util_htnew(TYPEDEF_HT_SIZE));
-    vec_push(parser->_blocktypedefs, vec_size(parser->_typedefs));
-    vec_push(parser->_block_ctx, parser_ctx(parser));
+    vec_push(parser_heap,parser->variables, util_htnew(PARSER_HT_SIZE));
+    vec_push(parser_heap,parser->_blocklocals, vec_size(parser->_locals));
+    vec_push(parser_heap,parser->typedefs, util_htnew(TYPEDEF_HT_SIZE));
+    vec_push(parser_heap,parser->_blocktypedefs, vec_size(parser->_typedefs));
+    vec_push(parser_heap,parser->_block_ctx, parser_ctx(parser));
 }
 
 static bool parser_leaveblock(parser_t *parser)
@@ -1747,7 +1749,7 @@ static bool parser_leaveblock(parser_t *parser)
 
 static void parser_addlocal(parser_t *parser, const char *name, ast_expression *e)
 {
-    vec_push(parser->_locals, e);
+    vec_push(parser_heap,parser->_locals, e);
     util_htset(vec_last(parser->variables), name, (void*)e);
 }
 
@@ -2274,7 +2276,7 @@ static bool parse_switch(parser_t *parser, ast_block *block, ast_expression **ou
             return false;
         }
         swcase.code = (ast_expression*)caseblock;
-        vec_push(switchnode->cases, swcase);
+        vec_push(parser_heap,switchnode->cases, swcase);
         while (true) {
             ast_expression *expr;
             if (parser->tok == '}')
@@ -2332,7 +2334,7 @@ static bool parse_goto(parser_t *parser, ast_expression **out)
         }
     }
     if (i == vec_size(parser->labels))
-        vec_push(parser->gotos, gt);
+        vec_push(parser_heap,parser->gotos, gt);
 
     if (!parser_next(parser) || parser->tok != ';') {
         parseerror(parser, "semicolon expected after goto label");
@@ -2520,7 +2522,7 @@ ident_var:
         label = ast_label_new(parser_ctx(parser), parser_tokval(parser));
         if (!label)
             return false;
-        vec_push(parser->labels, label);
+        vec_push(parser_heap,parser->labels, label);
         *out = (ast_expression*)label;
         if (!parser_next(parser)) {
             parseerror(parser, "parse error after label");
@@ -2624,13 +2626,13 @@ static bool create_vector_members(ast_value *var, ast_member **me)
     size_t len = strlen(var->name);
 
     for (i = 0; i < 3; ++i) {
-        char *name = mem_a(len+3);
+        char *name = mem_alloc(parser_heap,len+3);
         memcpy(name, var->name, len);
         name[len+0] = '_';
         name[len+1] = 'x'+i;
         name[len+2] = 0;
         me[i] = ast_member_new(ast_ctx(var), (ast_expression*)var, i, name);
-        mem_d(name);
+        mem_free(parser_heap, name);
         if (!me[i])
             break;
     }
@@ -2745,7 +2747,7 @@ static bool parse_function_body(parser_t *parser, ast_value *var)
                 return false;
             }
 
-            vec_push(parser->globals, (ast_expression*)thinkfunc);
+            vec_push(parser_heap,parser->globals, (ast_expression*)thinkfunc);
             util_htset(parser->htglobals, thinkfunc->name, thinkfunc);
             nextthink = (ast_expression*)thinkfunc;
 
@@ -2891,7 +2893,7 @@ static bool parse_function_body(parser_t *parser, ast_value *var)
         ast_block_delete(block);
         goto enderr;
     }
-    vec_push(parser->functions, func);
+    vec_push(parser_heap,parser->functions, func);
 
     parser->function = func;
     if (!parse_block_into(parser, block)) {
@@ -2899,7 +2901,7 @@ static bool parse_function_body(parser_t *parser, ast_value *var)
         goto enderrfn;
     }
 
-    vec_push(func->blocks, block);
+    vec_push(parser_heap,func->blocks, block);
 
     parser->function = old;
     if (!parser_leaveblock(parser))
@@ -3143,10 +3145,10 @@ static bool parser_create_array_accessor(parser_t *parser, ast_value *array, con
         return false;
     }
 
-    vec_push(func->blocks, body);
+    vec_push(parser_heap,func->blocks, body);
     *out = fval;
 
-    vec_push(parser->accessors, fval);
+    vec_push(parser_heap,parser->accessors, fval);
 
     return true;
 }
@@ -3177,8 +3179,8 @@ static bool parser_create_array_setter(parser_t *parser, ast_value *array, const
         goto cleanup;
     }
     (void)!ast_value_set_name(value, "value"); /* not important */
-    vec_push(fval->expression.params, index);
-    vec_push(fval->expression.params, value);
+    vec_push(parser_heap,fval->expression.params, index);
+    vec_push(parser_heap,fval->expression.params, value);
 
     root = array_setter_node(parser, array, index, value, 0, array->expression.count);
     if (!root) {
@@ -3225,9 +3227,9 @@ static bool parser_create_array_field_setter(parser_t *parser, ast_value *array,
         goto cleanup;
     }
     (void)!ast_value_set_name(value, "value"); /* not important */
-    vec_push(fval->expression.params, entity);
-    vec_push(fval->expression.params, index);
-    vec_push(fval->expression.params, value);
+    vec_push(parser_heap,fval->expression.params, entity);
+    vec_push(parser_heap,fval->expression.params, index);
+    vec_push(parser_heap,fval->expression.params, value);
 
     root = array_field_setter_node(parser, array, entity, index, value, 0, array->expression.count);
     if (!root) {
@@ -3274,7 +3276,7 @@ static bool parser_create_array_getter(parser_t *parser, ast_value *array, const
         parseerror(parser, "failed to create locals for array accessor");
         goto cleanup;
     }
-    vec_push(fval->expression.params, index);
+    vec_push(parser_heap,fval->expression.params, index);
 
     root = array_getter_node(parser, array, index, 0, array->expression.count);
     if (!root) {
@@ -3347,7 +3349,7 @@ static ast_value *parse_parameter_list(parser_t *parser, ast_value *var)
             param = parse_typename(parser, NULL, NULL);
             if (!param)
                 goto on_error;
-            vec_push(params, param);
+            vec_push(parser_heap,params, param);
             if (param->expression.vtype >= TYPE_VARIANT) {
                 char typename[1024];
                 ast_type_to_string((ast_expression*)param, typename, sizeof(typename));
@@ -3358,7 +3360,7 @@ static ast_value *parse_parameter_list(parser_t *parser, ast_value *var)
     }
 
     if (vec_size(params) == 1 && params[0]->expression.vtype == TYPE_VOID)
-        vec_free(params);
+        vec_free(parser_heap,params);
 
     /* sanity check */
     if (vec_size(params) > 8 && opts_standard == COMPILER_QCC)
@@ -3385,7 +3387,7 @@ on_error:
     ast_delete(var);
     for (i = 0; i < vec_size(params); ++i)
         ast_delete(params[i]);
-    vec_free(params);
+    vec_free(parser_heap,params);
     return NULL;
 }
 
@@ -3544,7 +3546,7 @@ static ast_value *parse_typename(parser_t *parser, ast_value **storebase, ast_va
 
     /* there may be a name now */
     if (parser->tok == TOKEN_IDENT) {
-        name = util_strdup(parser_tokval(parser));
+        name = util_strdup(parser_heap, parser_tokval(parser));
         /* parse on */
         if (!parser_next(parser)) {
             ast_delete(var);
@@ -3578,7 +3580,7 @@ static ast_value *parse_typename(parser_t *parser, ast_value **storebase, ast_va
         var = parse_parameter_list(parser, var);
         if (!var) {
             if (name)
-                mem_d((void*)name);
+                mem_free(parser_heap,(void*)name);
             ast_delete(var);
             return NULL;
         }
@@ -3592,7 +3594,7 @@ static ast_value *parse_typename(parser_t *parser, ast_value **storebase, ast_va
             return NULL;
         }
         /* free the name, ast_value_set_name duplicates */
-        mem_d((void*)name);
+        mem_free(parser_heap, (void*)name);
     }
 
     return var;
@@ -3623,7 +3625,7 @@ static bool parse_typedef(parser_t *parser)
         return false;
     }
 
-    vec_push(parser->_typedefs, typevar);
+    vec_push(parser_heap,parser->_typedefs, typevar);
     util_htset(vec_last(parser->typedefs), typevar->name, typevar);
 
     if (parser->tok != ';') {
@@ -3874,27 +3876,27 @@ static bool parse_variable(parser_t *parser, ast_block *localblock, bool nofield
                 /* deal with global variables, fields, functions */
                 if (!nofields && var->expression.vtype == TYPE_FIELD && parser->tok != '=') {
                     var->isfield = true;
-                    vec_push(parser->fields, (ast_expression*)var);
+                    vec_push(parser_heap,parser->fields, (ast_expression*)var);
                     util_htset(parser->htfields, var->name, var);
                     if (isvector) {
                         for (i = 0; i < 3; ++i) {
-                            vec_push(parser->fields, (ast_expression*)me[i]);
+                            vec_push(parser_heap,parser->fields, (ast_expression*)me[i]);
                             util_htset(parser->htfields, me[i]->name, me[i]);
                         }
                     }
                 }
                 else {
-                    vec_push(parser->globals, (ast_expression*)var);
+                    vec_push(parser_heap,parser->globals, (ast_expression*)var);
                     util_htset(parser->htglobals, var->name, var);
                     if (isvector) {
                         for (i = 0; i < 3; ++i) {
-                            vec_push(parser->globals, (ast_expression*)me[i]);
+                            vec_push(parser_heap,parser->globals, (ast_expression*)me[i]);
                             util_htset(parser->htglobals, me[i]->name, me[i]);
                         }
                     }
                 }
             } else {
-                vec_push(localblock->locals, var);
+                vec_push(parser_heap,localblock->locals, var);
                 parser_addlocal(parser, var->name, (ast_expression*)var);
                 if (isvector) {
                     for (i = 0; i < 3; ++i) {
@@ -4030,7 +4032,7 @@ skipvar:
                     parseerror(parser, "failed to allocate function for `%s`", var->name);
                     break;
                 }
-                vec_push(parser->functions, func);
+                vec_push(parser_heap,parser->functions, func);
 
                 func->builtin = -parser_token(parser)->constval.i-1;
             }
@@ -4059,8 +4061,8 @@ skipvar:
             ast_delete(basetype);
             for (i = 0; i < vec_size(parser->gotos); ++i)
                 parseerror(parser, "undefined label: `%s`", parser->gotos[i]->name);
-            vec_free(parser->gotos);
-            vec_free(parser->labels);
+            vec_free(parser_heap,parser->gotos);
+            vec_free(parser_heap,parser->labels);
             return true;
         } else {
             ast_expression *cexp;
@@ -4096,9 +4098,9 @@ skipvar:
                 shunt sy = { NULL, NULL };
                 cvq = var->cvq;
                 var->cvq = CV_NONE;
-                vec_push(sy.out, syexp(ast_ctx(var), (ast_expression*)var));
-                vec_push(sy.out, syexp(ast_ctx(cexp), (ast_expression*)cexp));
-                vec_push(sy.ops, syop(ast_ctx(var), parser->assign_op));
+                vec_push(parser_heap,sy.out, syexp(ast_ctx(var), (ast_expression*)var));
+                vec_push(parser_heap,sy.out, syexp(ast_ctx(cexp), (ast_expression*)cexp));
+                vec_push(parser_heap,sy.ops, syop(ast_ctx(var), parser->assign_op));
                 if (!parser_sy_pop(parser, &sy))
                     ast_unref(cexp);
                 else {
@@ -4106,8 +4108,8 @@ skipvar:
                         parseerror(parser, "internal error: leaked operands");
                     ast_block_add_expr(localblock, (ast_expression*)sy.out[0].out);
                 }
-                vec_free(sy.out);
-                vec_free(sy.ops);
+                vec_free(parser_heap,sy.out);
+                vec_free(parser_heap,sy.ops);
                 var->cvq = cvq;
             }
         }
@@ -4254,56 +4256,56 @@ static void generate_checksum(parser_t *parser)
     size_t     i;
     ast_value *value;
 
-	crc = progdefs_crc_both(crc, "\n/* file generated by qcc, do not modify */\n\ntypedef struct\n{");
-	crc = progdefs_crc_sum(crc, "\tint\tpad[28];\n");
-	/*
-	progdefs_crc_file("\tint\tpad;\n");
-	progdefs_crc_file("\tint\tofs_return[3];\n");
-	progdefs_crc_file("\tint\tofs_parm0[3];\n");
-	progdefs_crc_file("\tint\tofs_parm1[3];\n");
-	progdefs_crc_file("\tint\tofs_parm2[3];\n");
-	progdefs_crc_file("\tint\tofs_parm3[3];\n");
-	progdefs_crc_file("\tint\tofs_parm4[3];\n");
-	progdefs_crc_file("\tint\tofs_parm5[3];\n");
-	progdefs_crc_file("\tint\tofs_parm6[3];\n");
-	progdefs_crc_file("\tint\tofs_parm7[3];\n");
-	*/
-	for (i = 0; i < parser->crc_globals; ++i) {
-	    if (!ast_istype(parser->globals[i], ast_value))
-	        continue;
-	    value = (ast_value*)(parser->globals[i]);
-	    switch (value->expression.vtype) {
-	        case TYPE_FLOAT:    crc = progdefs_crc_both(crc, "\tfloat\t"); break;
-	        case TYPE_VECTOR:   crc = progdefs_crc_both(crc, "\tvec3_t\t"); break;
-	        case TYPE_STRING:   crc = progdefs_crc_both(crc, "\tstring_t\t"); break;
-	        case TYPE_FUNCTION: crc = progdefs_crc_both(crc, "\tfunc_t\t"); break;
-	        default:
-	            crc = progdefs_crc_both(crc, "\tint\t");
-	            break;
-	    }
-	    crc = progdefs_crc_both(crc, value->name);
-	    crc = progdefs_crc_both(crc, ";\n");
-	}
-	crc = progdefs_crc_both(crc, "} globalvars_t;\n\ntypedef struct\n{\n");
-	for (i = 0; i < parser->crc_fields; ++i) {
-	    if (!ast_istype(parser->fields[i], ast_value))
-	        continue;
-	    value = (ast_value*)(parser->fields[i]);
-	    switch (value->expression.next->expression.vtype) {
-	        case TYPE_FLOAT:    crc = progdefs_crc_both(crc, "\tfloat\t"); break;
-	        case TYPE_VECTOR:   crc = progdefs_crc_both(crc, "\tvec3_t\t"); break;
-	        case TYPE_STRING:   crc = progdefs_crc_both(crc, "\tstring_t\t"); break;
-	        case TYPE_FUNCTION: crc = progdefs_crc_both(crc, "\tfunc_t\t"); break;
-	        default:
-	            crc = progdefs_crc_both(crc, "\tint\t");
-	            break;
-	    }
-	    crc = progdefs_crc_both(crc, value->name);
-	    crc = progdefs_crc_both(crc, ";\n");
-	}
-	crc = progdefs_crc_both(crc, "} entvars_t;\n\n");
+    crc = progdefs_crc_both(crc, "\n/* file generated by qcc, do not modify */\n\ntypedef struct\n{");
+    crc = progdefs_crc_sum (crc, "\tint\tpad[28];\n");
+    /*
+    progdefs_crc_file("\tint\tpad;\n");
+    progdefs_crc_file("\tint\tofs_return[3];\n");
+    progdefs_crc_file("\tint\tofs_parm0[3];\n");
+    progdefs_crc_file("\tint\tofs_parm1[3];\n");
+    progdefs_crc_file("\tint\tofs_parm2[3];\n");
+    progdefs_crc_file("\tint\tofs_parm3[3];\n");
+    progdefs_crc_file("\tint\tofs_parm4[3];\n");
+    progdefs_crc_file("\tint\tofs_parm5[3];\n");
+    progdefs_crc_file("\tint\tofs_parm6[3];\n");
+    progdefs_crc_file("\tint\tofs_parm7[3];\n");
+    */
+    for (i = 0; i < parser->crc_globals; ++i) {
+        if (!ast_istype(parser->globals[i], ast_value))
+            continue;
+        value = (ast_value*)(parser->globals[i]);
+        switch (value->expression.vtype) {
+            case TYPE_FLOAT:    crc = progdefs_crc_both(crc, "\tfloat\t"); break;
+            case TYPE_VECTOR:   crc = progdefs_crc_both(crc, "\tvec3_t\t"); break;
+            case TYPE_STRING:   crc = progdefs_crc_both(crc, "\tstring_t\t"); break;
+            case TYPE_FUNCTION: crc = progdefs_crc_both(crc, "\tfunc_t\t"); break;
+            default:
+                crc = progdefs_crc_both(crc, "\tint\t");
+                break;
+        }
+        crc = progdefs_crc_both(crc, value->name);
+        crc = progdefs_crc_both(crc, ";\n");
+    }
+    crc = progdefs_crc_both(crc, "} globalvars_t;\n\ntypedef struct\n{\n");
+    for (i = 0; i < parser->crc_fields; ++i) {
+        if (!ast_istype(parser->fields[i], ast_value))
+            continue;
+        value = (ast_value*)(parser->fields[i]);
+        switch (value->expression.next->expression.vtype) {
+            case TYPE_FLOAT:    crc = progdefs_crc_both(crc, "\tfloat\t"); break;
+            case TYPE_VECTOR:   crc = progdefs_crc_both(crc, "\tvec3_t\t"); break;
+            case TYPE_STRING:   crc = progdefs_crc_both(crc, "\tstring_t\t"); break;
+            case TYPE_FUNCTION: crc = progdefs_crc_both(crc, "\tfunc_t\t"); break;
+            default:
+                crc = progdefs_crc_both(crc, "\tint\t");
+                break;
+        }
+        crc = progdefs_crc_both(crc, value->name);
+        crc = progdefs_crc_both(crc, ";\n");
+    }
+    crc = progdefs_crc_both(crc, "} entvars_t;\n\n");
 
-	code_crc = crc;
+    code_crc = crc;
 }
 
 static parser_t *parser;
@@ -4312,7 +4314,7 @@ bool parser_init()
 {
     size_t i;
 
-    parser = (parser_t*)mem_a(sizeof(parser_t));
+    parser = (parser_t*)mem_alloc(parser_heap,sizeof(parser_t));
     if (!parser)
         return false;
 
@@ -4325,15 +4327,15 @@ bool parser_init()
         }
     }
     if (!parser->assign_op) {
-        printf("internal error: initializing parser: failed to find assign operator\n");
-        mem_d(parser);
+        con_out("internal error: initializing parser: failed to find assign operator\n");
+        mem_free(parser_heap, parser);
         return false;
     }
 
-    vec_push(parser->variables, parser->htfields  = util_htnew(PARSER_HT_SIZE));
-    vec_push(parser->variables, parser->htglobals = util_htnew(PARSER_HT_SIZE));
-    vec_push(parser->typedefs, util_htnew(TYPEDEF_HT_SIZE));
-    vec_push(parser->_blocktypedefs, 0);
+    vec_push(parser_heap,parser->variables, parser->htfields  = util_htnew(PARSER_HT_SIZE));
+    vec_push(parser_heap,parser->variables, parser->htglobals = util_htnew(PARSER_HT_SIZE));
+    vec_push(parser_heap,parser->typedefs, util_htnew(TYPEDEF_HT_SIZE));
+    vec_push(parser_heap,parser->_blocktypedefs, 0);
     return true;
 }
 
@@ -4407,6 +4409,7 @@ void parser_cleanup()
         parser->accessors[i]->constval.vfunc = NULL;
         ast_delete(parser->accessors[i]);
     }
+    
     for (i = 0; i < vec_size(parser->functions); ++i) {
         ast_delete(parser->functions[i]);
     }
@@ -4425,34 +4428,37 @@ void parser_cleanup()
     for (i = 0; i < vec_size(parser->globals); ++i) {
         ast_delete(parser->globals[i]);
     }
-    vec_free(parser->accessors);
-    vec_free(parser->functions);
-    vec_free(parser->imm_vector);
-    vec_free(parser->imm_string);
-    vec_free(parser->imm_float);
-    vec_free(parser->globals);
-    vec_free(parser->fields);
+    
+    vec_free(parser_heap, parser->accessors);
+    vec_free(parser_heap, parser->functions);
+    vec_free(parser_heap, parser->imm_vector);
+    vec_free(parser_heap, parser->imm_string);
+    vec_free(parser_heap, parser->imm_float);
+    vec_free(parser_heap, parser->globals);
+    vec_free(parser_heap, parser->fields);
 
     for (i = 0; i < vec_size(parser->variables); ++i)
         util_htdel(parser->variables[i]);
-    vec_free(parser->variables);
-    vec_free(parser->_blocklocals);
-    vec_free(parser->_locals);
+        
+    vec_free(parser_heap, parser->variables);
+    vec_free(parser_heap, parser->_blocklocals);
+    vec_free(parser_heap, parser->_locals);
 
     for (i = 0; i < vec_size(parser->_typedefs); ++i)
         ast_delete(parser->_typedefs[i]);
-    vec_free(parser->_typedefs);
+        
+    vec_free(parser_heap,parser->_typedefs);
+    
     for (i = 0; i < vec_size(parser->typedefs); ++i)
         util_htdel(parser->typedefs[i]);
-    vec_free(parser->typedefs);
-    vec_free(parser->_blocktypedefs);
-
-    vec_free(parser->_block_ctx);
-
-    vec_free(parser->labels);
-    vec_free(parser->gotos);
-
-    mem_d(parser);
+        
+    vec_free(parser_heap, parser->typedefs);
+    vec_free(parser_heap, parser->_blocktypedefs);
+    vec_free(parser_heap, parser->_block_ctx);
+    vec_free(parser_heap, parser->labels);
+    vec_free(parser_heap, parser->gotos);
+    
+    mem_free(parser_heap, parser);
 }
 
 bool parser_finish(const char *output)

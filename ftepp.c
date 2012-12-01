@@ -22,6 +22,7 @@
  */
 #include "gmqcc.h"
 #include "lexer.h"
+mem_heap_t *ftepp_heap;
 
 typedef struct {
     bool on;
@@ -113,14 +114,14 @@ static bool GMQCC_WARN ftepp_warn(ftepp_t *ftepp, int warntype, const char *fmt,
 
 static pptoken *pptoken_make(ftepp_t *ftepp)
 {
-    pptoken *token = (pptoken*)mem_a(sizeof(pptoken));
+    pptoken *token = (pptoken*)mem_alloc(ftepp_heap, sizeof(pptoken));
     token->token = ftepp->token;
 #if 0
     if (token->token == TOKEN_WHITE)
-        token->value = util_strdup(" ");
+        token->value = util_strdup(ftepp_heap, " ");
     else
 #else
-        token->value = util_strdup(ftepp_tokval(ftepp));
+        token->value = util_strdup(ftepp_heap, ftepp_tokval(ftepp));
 #endif
     memcpy(&token->constval, &ftepp->lex->tok.constval, sizeof(token->constval));
     return token;
@@ -128,17 +129,17 @@ static pptoken *pptoken_make(ftepp_t *ftepp)
 
 static void pptoken_delete(pptoken *self)
 {
-    mem_d(self->value);
-    mem_d(self);
+    mem_free(ftepp_heap, self->value);
+    mem_free(ftepp_heap, self);
 }
 
 static ppmacro *ppmacro_new(lex_ctx ctx, const char *name)
 {
-    ppmacro *macro = (ppmacro*)mem_a(sizeof(ppmacro));
+    ppmacro *macro = (ppmacro*)mem_alloc(ftepp_heap, sizeof(ppmacro));
 
     (void)ctx;
     memset(macro, 0, sizeof(*macro));
-    macro->name = util_strdup(name);
+    macro->name = util_strdup(ftepp_heap, name);
     return macro;
 }
 
@@ -146,20 +147,20 @@ static void ppmacro_delete(ppmacro *self)
 {
     size_t i;
     for (i = 0; i < vec_size(self->params); ++i)
-        mem_d(self->params[i]);
-    vec_free(self->params);
+        mem_free(ftepp_heap, self->params[i]);
+    vec_free(ftepp_heap, self->params);
     for (i = 0; i < vec_size(self->output); ++i)
         pptoken_delete(self->output[i]);
-    vec_free(self->output);
-    mem_d(self->name);
-    mem_d(self);
+    vec_free(ftepp_heap, self->output);
+    mem_free(ftepp_heap, self->name);
+    mem_free(ftepp_heap, self);
 }
 
 static ftepp_t* ftepp_new()
 {
     ftepp_t *ftepp;
 
-    ftepp = (ftepp_t*)mem_a(sizeof(*ftepp));
+    ftepp = (ftepp_t*)mem_alloc(ftepp_heap, sizeof(*ftepp));
     memset(ftepp, 0, sizeof(*ftepp));
 
     ftepp->output_on = true;
@@ -171,16 +172,16 @@ static void ftepp_delete(ftepp_t *self)
 {
     size_t i;
     if (self->itemname)
-        mem_d(self->itemname);
+        mem_free(ftepp_heap, self->itemname);
     if (self->includename)
-        vec_free(self->includename);
+        vec_free(ftepp_heap, self->includename);
     for (i = 0; i < vec_size(self->macros); ++i)
         ppmacro_delete(self->macros[i]);
-    vec_free(self->macros);
-    vec_free(self->conditions);
+    vec_free(ftepp_heap, self->macros);
+    vec_free(ftepp_heap, self->conditions);
     if (self->lex)
         lex_close(self->lex);
-    mem_d(self);
+    mem_free(ftepp_heap, self);
 }
 
 static void ftepp_out(ftepp_t *ftepp, const char *str, bool ignore_cond)
@@ -190,7 +191,7 @@ static void ftepp_out(ftepp_t *ftepp, const char *str, bool ignore_cond)
         size_t len;
         char  *data;
         len = strlen(str);
-        data = vec_add(ftepp->output_string, len);
+        data = vec_add(ftepp_heap, ftepp->output_string, len);
         memcpy(data, str, len);
     }
 }
@@ -277,7 +278,7 @@ static bool ftepp_define_params(ftepp_t *ftepp, ppmacro *macro)
                 ftepp_error(ftepp, "unexpected token in parameter list");
                 return false;
         }
-        vec_push(macro->params, util_strdup(ftepp_tokval(ftepp)));
+        vec_push(ftepp_heap, macro->params, util_strdup(ftepp_heap, ftepp_tokval(ftepp)));
         ftepp_next(ftepp);
         if (!ftepp_skipspace(ftepp))
             return false;
@@ -296,7 +297,7 @@ static bool ftepp_define_body(ftepp_t *ftepp, ppmacro *macro)
     pptoken *ptok;
     while (ftepp->token != TOKEN_EOL && ftepp->token < TOKEN_EOF) {
         ptok = pptoken_make(ftepp);
-        vec_push(macro->output, ptok);
+        vec_push(ftepp_heap, macro->output, ptok);
         ftepp_next(ftepp);
     }
     /* recursive expansion can cause EOFs here */
@@ -348,7 +349,7 @@ static bool ftepp_define(ftepp_t *ftepp)
         return false;
 
     if (ftepp->output_on)
-        vec_push(ftepp->macros, macro);
+        vec_push(ftepp_heap, ftepp->macros, macro);
     else {
         ppmacro_delete(macro);
     }
@@ -375,7 +376,7 @@ static void macroparam_clean(macroparam *self)
     size_t i;
     for (i = 0; i < vec_size(self->tokens); ++i)
         pptoken_delete(self->tokens[i]);
-    vec_free(self->tokens);
+    vec_free(ftepp_heap, self->tokens);
 }
 
 /* need to leave the last token up */
@@ -402,13 +403,13 @@ static bool ftepp_macro_call_params(ftepp_t *ftepp, macroparam **out_params)
                 --parens;
             }
             ptok = pptoken_make(ftepp);
-            vec_push(mp.tokens, ptok);
+            vec_push(ftepp_heap, mp.tokens, ptok);
             if (ftepp_next(ftepp) >= TOKEN_EOF) {
                 ftepp_error(ftepp, "unexpected EOF in macro call");
                 goto on_error;
             }
         }
-        vec_push(params, mp);
+        vec_push(ftepp_heap, params, mp);
         mp.tokens = NULL;
         if (ftepp->token == ')')
             break;
@@ -435,7 +436,7 @@ on_error:
         macroparam_clean(&mp);
     for (i = 0; i < vec_size(params); ++i)
         macroparam_clean(&params[i]);
-    vec_free(params);
+    vec_free(ftepp_heap, params);
     return false;
 }
 
@@ -570,7 +571,7 @@ static bool ftepp_macro_expand(ftepp_t *ftepp, ppmacro *macro, macroparam *param
                 break;
         }
     }
-    vec_push(ftepp->output_string, 0);
+    vec_push(ftepp_heap, ftepp->output_string, 0);
     /* Now run the preprocessor recursively on this string buffer */
     /*
     printf("__________\n%s\n=========\n", ftepp->output_string);
@@ -639,7 +640,7 @@ static bool ftepp_macro_call(ftepp_t *ftepp, ppmacro *macro)
 cleanup:
     for (o = 0; o < vec_size(params); ++o)
         macroparam_clean(&params[o]);
-    vec_free(params);
+    vec_free(ftepp_heap, params);
     return retval;
 }
 
@@ -990,12 +991,12 @@ static char *ftepp_include_find_path(const char *file, const char *pathfile)
 
     if (last_slash) {
         len = last_slash - pathfile;
-        memcpy(vec_add(filename, len), pathfile, len);
-        vec_push(filename, '/');
+        memcpy(vec_add(ftepp_heap, filename, len), pathfile, len);
+        vec_push(ftepp_heap, filename, '/');
     }
 
     len = strlen(file);
-    memcpy(vec_add(filename, len+1), file, len);
+    memcpy(vec_add(ftepp_heap, filename, len+1), file, len);
     vec_last(filename) = 0;
 
     fp = util_fopen(filename, "rb");
@@ -1003,7 +1004,7 @@ static char *ftepp_include_find_path(const char *file, const char *pathfile)
         fclose(fp);
         return filename;
     }
-    vec_free(filename);
+    vec_free(ftepp_heap, filename);
     return NULL;
 }
 
@@ -1056,20 +1057,20 @@ static bool ftepp_include(ftepp_t *ftepp)
     inlex = lex_open(filename);
     if (!inlex) {
         ftepp_error(ftepp, "open failed on include file `%s`", filename);
-        vec_free(filename);
+        vec_free(ftepp_heap, filename);
         return false;
     }
     ftepp->lex = inlex;
     old_includename = ftepp->includename;
     ftepp->includename = filename;
     if (!ftepp_preprocess(ftepp)) {
-        vec_free(ftepp->includename);
+        vec_free(ftepp_heap, ftepp->includename);
         ftepp->includename = old_includename;
         lex_close(ftepp->lex);
         ftepp->lex = old_lexer;
         return false;
     }
-    vec_free(ftepp->includename);
+    vec_free(ftepp_heap, ftepp->includename);
     ftepp->includename = old_includename;
     lex_close(ftepp->lex);
     ftepp->lex = old_lexer;
@@ -1130,7 +1131,7 @@ static bool ftepp_hash(ftepp_t *ftepp)
                 if (!ftepp_ifdef(ftepp, &cond))
                     return false;
                 cond.was_on = cond.on;
-                vec_push(ftepp->conditions, cond);
+                vec_push(ftepp_heap, ftepp->conditions, cond);
                 ftepp->output_on = ftepp->output_on && cond.on;
                 break;
             }
@@ -1139,7 +1140,7 @@ static bool ftepp_hash(ftepp_t *ftepp)
                     return false;
                 cond.on = !cond.on;
                 cond.was_on = cond.on;
-                vec_push(ftepp->conditions, cond);
+                vec_push(ftepp_heap, ftepp->conditions, cond);
                 ftepp->output_on = ftepp->output_on && cond.on;
                 break;
             }
@@ -1181,7 +1182,7 @@ static bool ftepp_hash(ftepp_t *ftepp)
                 if (!ftepp_if(ftepp, &cond))
                     return false;
                 cond.was_on = cond.on;
-                vec_push(ftepp->conditions, cond);
+                vec_push(ftepp_heap, ftepp->conditions, cond);
                 ftepp->output_on = ftepp->output_on && cond.on;
                 break;
             }
@@ -1312,7 +1313,7 @@ static bool ftepp_preprocess(ftepp_t *ftepp)
     } while (!ftepp->errors && ftepp->token < TOKEN_EOF);
 
     /* force a 0 at the end but don't count it as added to the output */
-    vec_push(ftepp->output_string, 0);
+    vec_push(ftepp_heap, ftepp->output_string, 0);
     vec_shrinkby(ftepp->output_string, 1);
 
     return (ftepp->token == TOKEN_EOF);
@@ -1333,7 +1334,7 @@ static bool ftepp_preprocess_done()
     lex_close(ftepp->lex);
     ftepp->lex = NULL;
     if (ftepp->itemname) {
-        mem_d(ftepp->itemname);
+        mem_free(ftepp_heap, ftepp->itemname);
         ftepp->itemname = NULL;
     }
     return retval;
@@ -1342,7 +1343,7 @@ static bool ftepp_preprocess_done()
 bool ftepp_preprocess_file(const char *filename)
 {
     ftepp->lex = lex_open(filename);
-    ftepp->itemname = util_strdup(filename);
+    ftepp->itemname = util_strdup(ftepp_heap, filename);
     if (!ftepp->lex) {
         con_out("failed to open file \"%s\"\n", filename);
         return false;
@@ -1355,7 +1356,7 @@ bool ftepp_preprocess_file(const char *filename)
 bool ftepp_preprocess_string(const char *name, const char *str)
 {
     ftepp->lex = lex_open_string(str, strlen(str), name);
-    ftepp->itemname = util_strdup(name);
+    ftepp->itemname = util_strdup(ftepp_heap, name);
     if (!ftepp->lex) {
         con_out("failed to create lexer for string \"%s\"\n", name);
         return false;
@@ -1389,7 +1390,7 @@ void ftepp_add_define(const char *source, const char *name)
     lex_ctx ctx = { "__builtin__", 0 };
     ctx.file = source;
     macro = ppmacro_new(ctx, name);
-    vec_push(ftepp->macros, macro);
+    vec_push(ftepp_heap, ftepp->macros, macro);
 }
 
 const char *ftepp_get()
@@ -1399,7 +1400,7 @@ const char *ftepp_get()
 
 void ftepp_flush()
 {
-    vec_free(ftepp->output_string);
+    vec_free(ftepp_heap, ftepp->output_string);
 }
 
 void ftepp_finish()

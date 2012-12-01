@@ -23,6 +23,7 @@
  */
 #include "gmqcc.h"
 #include "lexer.h"
+mem_heap_t *main_heap;
 
 uint32_t    opts_flags[1 + (COUNT_FLAGS / 32)];
 uint32_t    opts_optimization[1 + (COUNT_OPTIMIZATIONS / 32)];
@@ -417,7 +418,7 @@ static bool options_parse(int argc, char **argv) {
                         return false;
                     }
                     item.filename = argarg;
-                    vec_push(items, item);
+                    vec_push(main_heap, items, item);
                     break;
 
                 case '-':
@@ -453,7 +454,7 @@ static bool options_parse(int argc, char **argv) {
             /* it's a QC filename */
             item.filename = argv[0];
             item.type     = TYPE_QC;
-            vec_push(items, item);
+            vec_push(main_heap, items, item);
         }
     }
     return true;
@@ -485,6 +486,14 @@ static bool progs_nextline(char **out, size_t *alen,FILE *src) {
     return true;
 }
 
+extern mem_heap_t *ast_heap;
+extern mem_heap_t *code_heap;
+extern mem_heap_t *ftepp_heap;
+extern mem_heap_t *ir_heap;
+extern mem_heap_t *lex_heap;
+extern mem_heap_t *main_heap;
+extern mem_heap_t *parser_heap;
+extern mem_heap_t *util_heap;
 int main(int argc, char **argv) {
     size_t itr;
     int retval = 0;
@@ -495,6 +504,17 @@ int main(int argc, char **argv) {
     app_name = argv[0];
     con_init();
     util_heap = mem_heap_add("utility heap", 33554432, __FILE__, __LINE__);
+
+
+    /* init many heaps */
+    ast_heap    = mem_new("ast");
+    code_heap   = mem_new("code");
+    ftepp_heap  = mem_new("ftepp");
+    ir_heap     = mem_new("ir");
+    lex_heap    = mem_new("lex");
+    main_heap   = mem_new("main");
+    parser_heap = mem_new("parser");
+    util_heap   = mem_new("util");
 
     /* default options / warn flags */
     options_set(opts_warn, WARN_UNKNOWN_CONTROL_SEQUENCE, true);
@@ -601,7 +621,7 @@ int main(int argc, char **argv) {
         }
 
         if (!opts_output_wasset) {
-            opts_output = util_strdup(line);
+            opts_output = util_strdup(main_heap, line);
             opts_output_free = true;
         }
 
@@ -609,14 +629,14 @@ int main(int argc, char **argv) {
             argitem item;
             if (!line[0] || (line[0] == '/' && line[1] == '/'))
                 continue;
-            item.filename = util_strdup(line);
+            item.filename = util_strdup(main_heap, line);
             item.type     = TYPE_QC;
-            vec_push(items, item);
+            vec_push(main_heap, items, item);
         }
 
 srcdone:
         fclose(src);
-        mem_d(line);
+        /*mem_d(line);*/
     }
 
     if (retval)
@@ -673,7 +693,7 @@ srcdone:
             }
 
             if (progs_src) {
-                mem_d(items[itr].filename);
+                /*mem_d(items[itr].filename);*/
                 items[itr].filename = NULL;
             }
         }
@@ -701,15 +721,15 @@ cleanup:
     util_debug("COM", "cleaning ...\n");
     ftepp_finish();
     con_close();
-    vec_free(items);
+    vec_free(main_heap, items);
 
     if (!opts_pp_only)
         parser_cleanup();
     if (opts_output_free)
-        mem_d((char*)opts_output);
+        mem_free(main_heap, (char*)opts_output);
 
     lex_cleanup();
-    mem_dump();
-    mem_destroyall(__FILE__, __LINE__);
+    mem_dump   ();
+    mem_destroy();
     return retval;
 }
