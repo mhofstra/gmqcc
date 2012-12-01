@@ -2855,9 +2855,9 @@ bool ast_call_codegen(ast_call *self, ast_function *func, bool lvalue, ir_value 
     *out = ir_call_value(callinstr);
     self->expression.outr = *out;
 
-    vec_free(ast_heap,params);
+    vec_free(ast_heap, params);
     return true;
 error:
-    vec_free(ast_heap,params);
+    vec_free(ast_heap, params);
     return false;
 }

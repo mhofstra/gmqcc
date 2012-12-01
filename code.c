@@ -61,6 +61,7 @@ void code_init() {
 
     vec_push(code_heap, code_chars, '\0');
     vec_push(code_heap, code_functions,  empty_function);
+    
     code_push_statement(&empty_statement, 0);
     
     vec_push(code_heap, code_defs,       empty_def);
@@ -154,18 +155,6 @@ bool code_write(const char *filename, const char *lnofile) {
         {
             con_err("failed to write lno file\n");
         }
-            /*
-			h = SafeOpenWrite (destfile, 2*1024*1024);
-			SafeWrite (h, &lnotype, sizeof(int));
-			SafeWrite (h, &version, sizeof(int));
-			SafeWrite (h, &numglobaldefs, sizeof(int));
-			SafeWrite (h, &numpr_globals, sizeof(int));
-			SafeWrite (h, &numfielddefs, sizeof(int));
-			SafeWrite (h, &numstatements, sizeof(int));
-			SafeWrite (h, statement_linenums, numstatements*sizeof(int));
-			SafeClose (h);
-			*/
-
         fclose(fp);
         fp = NULL;
     }

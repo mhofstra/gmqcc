@@ -4332,10 +4332,10 @@ bool parser_init()
         return false;
     }
 
-    vec_push(parser_heap,parser->variables, parser->htfields  = util_htnew(PARSER_HT_SIZE, parser_heap));
-    vec_push(parser_heap,parser->variables, parser->htglobals = util_htnew(PARSER_HT_SIZE, parser_heap));
-    vec_push(parser_heap,parser->typedefs, util_htnew(TYPEDEF_HT_SIZE, parser_heap));
-    vec_push(parser_heap,parser->_blocktypedefs, 0);
+    vec_push(parser_heap, parser->variables, parser->htfields  = util_htnew(PARSER_HT_SIZE, parser_heap));
+    vec_push(parser_heap, parser->variables, parser->htglobals = util_htnew(PARSER_HT_SIZE, parser_heap));
+    vec_push(parser_heap, parser->typedefs, util_htnew(TYPEDEF_HT_SIZE, parser_heap));
+    vec_push(parser_heap, parser->_blocktypedefs, 0);
     return true;
 }
 
